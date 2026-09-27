@@ -119,6 +119,13 @@ def overlay_style(theme: str, opacity_pct: int, font_size: int) -> str:
     border: 1px solid {_with_alpha(c['line'], min(100, alpha + 10))};
     border-radius: 10px;
 }}
+/* 窗口是半透明的：浮窗内部**不要**再出现不透明底色。
+   应用级样式表里有 `QWidget {{ background-color: {c['bg']} }}`，回话区/问答卡片若不自带
+   带透明度的规则，就会在低不透明度下露出整块黑底（用户反馈的"回话窗口黑块"）。
+   这里统一压成透明，下面的 #ovRow / #ovInput / #ovExchCard 等再各自覆盖回来。 */
+#ovWrap QWidget, #ovWrap QFrame, #ovWrap QLabel, #ovWrap QScrollArea, #ovWrap QLineEdit, #ovWrap QComboBox {{
+    background-color: transparent;
+}}
 #ovTitle {{ color: {c['accent']}; font-size: 11px; font-weight: 600; }}
 #ovCount {{ color: {c['muted']}; font-size: 11px; }}
 QLabel#ovRowTrans {{ color: {c['text']}; font-size: {font_size}px; }}
@@ -126,6 +133,11 @@ QLabel#ovRowOrig {{ color: {c['muted']}; font-size: {max(9, font_size - 3)}px; }
 QLabel#ovPending {{ color: {c['warn']}; font-size: {font_size}px; font-style: italic; }}
 QFrame#ovRow {{ background-color: {row_hex}; border-radius: 6px; }}
 QFrame#ovHeader {{ background-color: transparent; }}
+/* 回话区的问答卡片：同样按不透明度淡出，别用不透明的 row_bg */
+QFrame#ovExchCard {{ background-color: {row_hex}; border-radius: 6px; }}
+QLabel#ovExchOrig {{ color: {c['muted']}; }}
+QLabel#ovExchReply {{ color: {c['text']}; }}
+QLabel#ovExchTag {{ color: {c['accent']}; font-size: 11px; }}
 QPushButton#ovBtn {{
     background: transparent; border: none; color: {c['muted']};
     padding: 1px 6px; font-size: 12px;

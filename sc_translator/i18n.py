@@ -471,6 +471,13 @@ _T: dict[str, tuple[str, str, str]] = {
     ),
     "ov.show": ("显示浮窗", "顯示懸浮框", "Show overlay"),
     "ov.show.tip": ("重新显示译文悬浮框", "重新顯示譯文懸浮框", "Re-show the translation overlay"),
+    "ov.snap": ("🎯 截图翻译", "🎯 截圖翻譯", "🎯 Capture & translate"),
+    "ov.snap.short": ("🎯 翻译", "🎯 翻譯", "🎯 Translate"),
+    "ov.snap.tip": (
+        "重新抓取记住的区域并翻译。游戏里全局热键失灵时，用鼠标点这里。",
+        "重新抓取記住的區域並翻譯。遊戲裡全域熱鍵失靈時，用滑鼠點這裡。",
+        "Re-capture the saved region and translate — mouse fallback when the in-game hotkey fails",
+    ),
     "ov.show_fail": (
         "浮窗打开失败：{msg}",
         "懸浮框開啟失敗：{msg}",

@@ -8,7 +8,8 @@
 - 词条文件为 ini/纯文本：每行 `Stanton = 斯坦顿星系`
 - 匹配按词边界、忽略大小写；多词词条优先（Pyro System > Pyro）
 - 不替换嵌在更长单词里的子串（Stantons 不受影响）
-- 聊天中若玩家名恰好叫 Pyro 会被替换——可把该玩家加入词条文件注释或把词条写成长句
+- 聊天行请用 ``apply_chat()``：它跳过 ``[频道] 玩家名:`` 前缀，玩家名不会被替换
+  （``apply()`` 用于普通文本，玩家名恰好叫 Pyro/Andromeda 这类词时会被替换）
 """
 
 from __future__ import annotations
@@ -109,6 +110,21 @@ def apply(text: str) -> str:
         return _pattern.sub(_rep, text)
     except Exception:  # noqa: BLE001
         return text
+
+
+def apply_chat(text: str) -> str:
+    """聊天行专用：只替换 ``[频道] 玩家名:`` **之后**的正文。
+
+    背景（用户反馈）：玩家叫 ``Cpt_Andromeda`` 时，``apply()`` 会把名字里的
+    Andromeda 也替换成「仙女座」，于是译文出现「[全局]Cpt_仙女座:…」。
+    频道名/玩家名一律不动，只译正文里的专名。
+    """
+    from .textutil import split_chat_prefix
+
+    head, body = split_chat_prefix(text)
+    if not head:
+        return apply(text)
+    return head + apply(body)
 
 
 SAMPLE = """# SC 术语表：聊天预替换用（每行 英文词条 = 规范中文译名，可多词）

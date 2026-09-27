@@ -24,11 +24,45 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .textutil import CHAT_HEAD_RE
+
 log = logging.getLogger(__name__)
 
 # 常见的"噪声行"：纯数字、纯标点、单字符符号
 _NOISE = re.compile(r"^[\W\d_]+$")
 _HAS_WORD = re.compile(r"[A-Za-z\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff]{2,}")
+
+
+def merge_messages(texts: list[str]) -> list[str]:
+    """把同一句被折行拆开的 OCR 行并回一条消息。
+
+    游戏聊天一句太长时会自己折行，OCR 逐行返回；**逐行送翻译**会把一句拆成几段
+    各译一次——实测 ``… pour`` / ``rien`` 被翻成两行、``gateway`` 单独译成「网关」。
+
+    规则（只在**聊天消息内部**合并，不碰其它文本）：
+    - 带 ``[频道] 玩家名:`` 头的行 = 新消息；
+    - 无头行**只接到"上一条本身就是聊天消息"后面**；
+    - 无头行前面没有聊天消息时自成一条 ⇒ 选到 UI/任务文本区域时行为与合并前完全一致
+      （否则会把互不相干的几行硬并成一句）。
+
+    上限：这是一条启发式；某条消息的头被 OCR 认丢时，它会被并进上一条
+    （宁可合并成一句，也不要拆成几段各译一次）。
+    升级触发：真机上出现"把两条不同玩家的消息并成一条"的抱怨时，
+    再引入纵向间距（OcrLine.cy）作为第二判据。
+    """
+    out: list[str] = []
+    head_started: list[bool] = []      # 与 out 平行：该条是否由"消息头"开启
+    for raw in texts:
+        text = (raw or "").strip()
+        if not text:
+            continue
+        is_head = bool(CHAT_HEAD_RE.match(text))
+        if is_head or not out or not head_started[-1]:
+            out.append(text)
+            head_started.append(is_head)
+        else:
+            out[-1] = f"{out[-1]} {text}"
+    return out
 
 
 @dataclass
@@ -242,7 +276,8 @@ class SnapshotService:
             res.error = f"OCR 初始化/识别失败：{exc}"
             return res
         res.ocr_ms = int((time.time() - t_ocr) * 1000)
-        texts = filter_lines([r.text for r in rows])[:max_lines]
+        # 先并回被折行拆开的同一句，再逐条送翻译（否则一句会变成几行各译一次）
+        texts = merge_messages(filter_lines([r.text for r in rows]))[:max_lines]
         if not texts:
             res.error = "没有识别到文字（区域可能不含文本，或画面被遮挡）"
             return res

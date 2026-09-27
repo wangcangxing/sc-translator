@@ -313,6 +313,8 @@ def _run() -> int:
     controller = AppController(app)
     controller.init_ui()
     controller.mainwin.show()
+    # 启动几秒后在后台预热 OCR 模型：否则第一次按热键要等十几秒的模型冷启动
+    controller.prewarm_ocr()
     _write_ready_marker()
 
     # 冒烟测试：SC_SMOKE_SECONDS=N 时 N 秒后自动退出（自动化验证用）

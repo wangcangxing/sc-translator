@@ -22,6 +22,7 @@ from __future__ import annotations
 import ctypes
 import html
 import logging
+import time
 from ctypes import wintypes
 from typing import Optional
 
@@ -40,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..hotkeys import foreground_window, restore_foreground
 from ..i18n import t
 from .theme import palette, overlay_style
 
@@ -60,7 +62,7 @@ class GripHandle(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_QuitOnClose, False)   # 与浮窗一起，不阻止关主窗口时退出
-        self.setFixedSize(64, 24)
+        self.setFixedSize(120, 24)
         self._press: Optional[QPoint] = None
         self._moved = False
         self.setCursor(Qt.OpenHandCursor)
@@ -72,6 +74,14 @@ class GripHandle(QWidget):
             "border-radius:9px; background:rgba(24,29,38,235); color:#46a6ff; font-size:12px; font-weight:600;"
         )
         self.setToolTip(t("ov.grip.tip"))
+        # 穿透（未固定）态下标题栏是隐藏的 ⇒ 一键截图翻译按钮必须放在这个常驻小条上，
+        # 否则"游戏里热键失灵"时用户根本看不到入口（默认设置就是穿透态）。
+        self._snap_btn = QPushButton(t("ov.snap.short"), self)
+        self._snap_btn.setObjectName("ovBtn")
+        self._snap_btn.setToolTip(t("ov.snap.tip"))
+        self._snap_btn.setGeometry(64, 2, 54, 20)
+        self._snap_btn.setCursor(Qt.PointingHandCursor)
+        self._snap_btn.clicked.connect(self._ov._on_snap_clicked)
 
     def _style_refresh(self) -> None:
         c = palette(self._ov.ctx.settings.theme)
@@ -83,6 +93,8 @@ class GripHandle(QWidget):
         """切换界面语言后刷新本手柄文案。"""
         self._label.setText(t("ov.grip"))
         self.setToolTip(t("ov.grip.tip"))
+        self._snap_btn.setText(t("ov.snap.short"))
+        self._snap_btn.setToolTip(t("ov.snap.tip"))
 
     # ---- 拖动/点击 ----
     def mousePressEvent(self, ev: QMouseEvent) -> None:
@@ -155,6 +167,13 @@ class OverlayWindow(QWidget):
         self._row_data: dict[str, dict] = {}                 # 行数据（供「显示原文」等即时重渲染）
         self._exchanges: list[tuple[str, str, str]] = []   # (原文, 译文, 目标语言)
         self._pending_show = False
+        # 点浮窗按钮时前台已经被自己抢走，所以用 300ms 轮询提前记住"点击前的外部前台窗口"
+        # （第 38 轮探针实测：clicked 回调里 GetForegroundWindow 已经等于自己）
+        self._last_fg = 0
+        self._last_fg_at = 0.0
+        self._focus_timer = QTimer(self)
+        self._focus_timer.setInterval(300)
+        self._focus_timer.timeout.connect(self._poll_foreground)
 
         # ------- 结构 -------
         self._wrap = QFrame(self)
@@ -179,6 +198,10 @@ class OverlayWindow(QWidget):
         hlay.addWidget(self._title)
         hlay.addWidget(self._count)
         hlay.addStretch(1)
+        self._snap_btn = QPushButton(t("ov.snap"), self._header)
+        self._snap_btn.setObjectName("ovBtn")
+        self._snap_btn.setToolTip(t("ov.snap.tip"))
+        self._snap_btn.clicked.connect(self._on_snap_clicked)
         self._spicy_btn = QPushButton("", self._header)
         self._spicy_btn.setObjectName("ovBtn")
         self._spicy_btn.setToolTip(t("ov.spicy.tip"))
@@ -199,6 +222,7 @@ class OverlayWindow(QWidget):
         self._btn_hide = btn_hide
         btn_hide.setToolTip(t("ov.hide.tip"))
         btn_hide.clicked.connect(self._on_hide_clicked)
+        hlay.addWidget(self._snap_btn)
         hlay.addWidget(self._spicy_btn)
         hlay.addWidget(self._ct_btn)
         hlay.addWidget(self._pin_btn)
@@ -478,6 +502,8 @@ class OverlayWindow(QWidget):
     def retranslate(self) -> None:
         """切换界面语言后刷新悬浮框内文案（问答记录一并重建以刷新按钮文案）。"""
         self._title.setText(t("ov.title"))
+        self._snap_btn.setText(t("ov.snap"))
+        self._snap_btn.setToolTip(t("ov.snap.tip"))
         self._spicy_btn.setToolTip(t("ov.spicy.tip"))
         self._ct_btn.setToolTip(t("ovc.click_through.tip"))
         self._pin_btn.setToolTip(t("ov.pin.tip"))
@@ -639,6 +665,58 @@ class OverlayWindow(QWidget):
         self._count.setText(info)
 
     # ---------------------------------------------------------- 交互
+    #: 点击前多久内见过"外部前台窗口"才算"刚从它那里切过来"（秒）
+    _FOCUS_HANDOVER_SEC = 2.0
+
+    def _poll_foreground(self) -> None:
+        """记住最新一次**外部**前台窗口（跳过我们自己的窗口）。
+
+        为什么必须跳过自己（第 38 轮真机实测踩到）：点击会让本进程接管前台，
+        而轮询可能在"激活"与"clicked 回调"之间又跑一次；若把自己也记下来，
+        点击时拿到的就是自己，焦点就还不回去了。
+        """
+        cur = foreground_window()
+        if not cur or cur in self._own_hwnds():
+            return
+        self._last_fg = cur
+        self._last_fg_at = time.monotonic()
+
+    def _own_hwnds(self) -> set[int]:
+        """本进程自己的顶层窗口句柄（浮窗 / 主窗口 / 拖动手柄）。"""
+        out: set[int] = set()
+        for w in (self, getattr(self.ctx, "mainwin", None), getattr(self, "_floating_grip", None)):
+            if w is None:
+                continue
+            try:
+                out.add(int(w.winId()))
+            except Exception:  # noqa: BLE001  窗口正在销毁
+                pass
+        return out
+
+    def _on_snap_clicked(self) -> None:
+        """浮窗上的一键截图翻译（= 主窗口「立即截图翻译」/全局热键的同一个入口）。
+
+        存在理由：游戏里全局热键可能收不到（前台是游戏时 WM_HOTKEY 不来），
+        鼠标点浮窗上的按钮是唯一能触发的路径。
+        点完把前台还给"点击前的那个窗口"（通常是游戏）：抓屏/翻译都在后台线程跑、
+        结果自己会显示，键盘焦点没必要留在浮窗上。
+        判据是**最近 2 秒内见过外部前台窗口**（`_FOCUS_HANDOVER_SEC`）：游戏一直前台时会命中；
+        在桌面上用久了自己程序（上次外部前台早过期）则不动焦点，免得把别的程序拽回前台。
+        例外：还没框选过区域时 `on_snap_hotkey` 会进入**全屏框选**，那一步需要焦点，不能还。
+        """
+        handler = getattr(getattr(self.ctx, "mainwin", None), "on_snap_hotkey", None)
+        if handler is None:
+            return
+        fresh = (time.monotonic() - self._last_fg_at) <= self._FOCUS_HANDOVER_SEC
+        previous = self._last_fg if fresh else 0
+        handler()
+        region = getattr(self.ctx.settings, "snap_region", None) or {}
+        if previous and region.get("physical"):
+            if restore_foreground(previous):
+                log.debug("一键截图翻译后已把前台还给 hwnd=%s", previous)
+            else:
+                log.debug("前台未还给 hwnd=%s（系统拒绝，忽略）", previous)
+
     def _on_hide_clicked(self) -> None:
         self._user_hidden = True
         self.hide_overlay()
@@ -677,6 +755,13 @@ class OverlayWindow(QWidget):
         self._grip.raise_()
         # show 之后 winId 有效再应用扩展样式
         QTimer.singleShot(0, self._apply_pin_state)
+        self._last_fg = 0
+        self._last_fg_at = 0.0
+        self._focus_timer.start()          # 只在浮窗可见时跟踪前台窗口
+
+    def hideEvent(self, ev) -> None:
+        self._focus_timer.stop()
+        super().hideEvent(ev)
 
     # --- 标题栏拖拽（固定态） ---
     def _header_press(self, ev: QMouseEvent):
@@ -819,28 +904,24 @@ class OverlayWindow(QWidget):
         self._bump_idle()
 
     def _make_exchange_row(self, original: str, reply: str, target: str) -> QFrame:
-        c = palette(self.ctx.settings.theme)
+        # 样式统一放在 theme.overlay_style 里（按不透明度淡出）：
+        # 卡片若自带不透明底色，低不透明度时就是一块黑（用户反馈过）
         card = QFrame()
-        card.setStyleSheet(
-            f"QFrame#x{{background:{c['row_bg']};border-radius:6px;}}"
-            f"QLabel#xo{{color:{c['muted']};}}"
-            f"QLabel#xr{{color:{c['text']};}}"
-        )
-        card.setObjectName("x")
+        card.setObjectName("ovExchCard")
         lay = QVBoxLayout(card)
         lay.setContentsMargins(8, 5, 8, 5)
         lay.setSpacing(2)
 
         # 原文（可选中，手动复制）——纯文本，避免把 ' 等转义成 &#x27; 实体显示
         orig_lbl = QLabel(original, card)
-        orig_lbl.setObjectName("xo")
+        orig_lbl.setObjectName("ovExchOrig")
         orig_lbl.setWordWrap(True)
         orig_lbl.setTextFormat(Qt.PlainText)
         orig_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(orig_lbl)
         # 回复（可选中）——同上纯文本
         reply_lbl = QLabel(reply, card)
-        reply_lbl.setObjectName("xr")
+        reply_lbl.setObjectName("ovExchReply")
         reply_lbl.setWordWrap(True)
         reply_lbl.setTextFormat(Qt.PlainText)
         reply_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -850,7 +931,7 @@ class OverlayWindow(QWidget):
         brow.setContentsMargins(0, 0, 0, 0)
         brow.setSpacing(6)
         tag = QLabel(f"→ {target}", card)
-        tag.setStyleSheet(f"color:{c['accent']};font-size:11px;")
+        tag.setObjectName("ovExchTag")
         brow.addWidget(tag)
         brow.addStretch(1)
         b_copy = QPushButton(t("ov.exch.copy_reply"), card)

@@ -313,3 +313,11 @@ def test_no_rework_while_shutting_down(qapp, ctrl_factory):
     win._on_snap_keys_changed()               # 不应保存/重新注册
     assert (ctrl.settings.snap_hotkey, ctrl.settings.snap_hotkey_select) == before
     win._shutting_down = False
+
+
+# ---------------------------------------------------------------- 前台窗口归还
+def test_restore_foreground_rejects_bad_handles():
+    """一键翻译后还焦点用的帮手：非法句柄必须安全返回 False，不抛异常。"""
+    assert hotkeys.restore_foreground(0) is False
+    assert hotkeys.restore_foreground(0xDEADBEEF) is False      # 不存在的窗口
+    assert isinstance(hotkeys.foreground_window(), int)

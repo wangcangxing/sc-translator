@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Signal
@@ -371,6 +372,35 @@ class AppController:
             except Exception as exc:  # noqa: BLE001
                 log.warning("注销热键异常: %s", exc)
             self.hotkeys = None
+
+    def prewarm_ocr(self, delay_ms: int = 3000) -> None:
+        """启动后延迟预热本地 OCR 模型（第一次按热键不再等模型冷启动）。
+
+        实测：不预热时第一次截图翻译要背十几秒的模型加载（2026-09-27 日志 OCR 14625ms，
+        之后每次 300~500ms）。
+        只在**用得上**时预热：热键停用、或走"模型直接读图"（不碰本地 OCR）时不预热；
+        加载放在后台线程里（QTimer 到点后 `run_in_thread`），不挡界面。
+        代价：预热后常驻内存约 +90MB（OCR 栈本身就随包分发，只是提前到启动后几秒加载）。
+        """
+        if not self.settings.snap_enabled or bool(getattr(self.settings, "ocr_vision", False)):
+            return
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(max(0, int(delay_ms)), self._prewarm_ocr_now)
+
+    def _prewarm_ocr_now(self) -> None:
+        def work() -> int:
+            t0 = time.time()
+            self.snapshot.ocr.warmup()
+            return int((time.time() - t0) * 1000)
+
+        def done(ok: bool, value: object) -> None:
+            if ok:
+                log.info("OCR 预热完成：模型加载 %sms", value)
+            else:
+                log.warning("OCR 预热失败（不影响按需使用，首次识别会重试）: %s", value)
+
+        self.run_in_thread(work, done)
 
     # ------------------------------------------------------- 主题
     def apply_theme(self, theme: str) -> None:

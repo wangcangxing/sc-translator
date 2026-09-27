@@ -55,6 +55,49 @@ def test_rapidocr_reads_synthetic_game_text(tmp_home):
     assert hits >= 2, f"OCR 识别内容与期望偏差较大: {joined}"
 
 
+#: 499×282 的九行"游戏聊天"图：这是当初把 DET_LIMIT_SIDE_LEN 从 736 降到 512 的判据图
+#: （512 实测比 736 快约 38%，且这张图九行全中）。改了那个常数就必须重跑本用例。
+_NINE_LINE_TEXT = [
+    "[GLOBAL] Crispy Packs:890 ready to go",
+    "Quantum travel to Crusader",
+    "Bounty mission updated",
+    "[GLOBAL] Amygdalaa: pull up",
+    "valakkar spotted near Pyro",
+    "890 jump needs escort",
+    "Quantum fuel low",
+    "Bounty target eliminated",
+    "Party invite accepted",
+]
+
+
+def _nine_line_chat() -> np.ndarray:
+    import cv2
+
+    img = np.full((282, 499, 3), 18, dtype=np.uint8)
+    y = 16
+    for line in _NINE_LINE_TEXT:
+        cv2.putText(img, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (215, 215, 215), 1, cv2.LINE_AA)
+        y += 28
+    return img
+
+
+def test_ocr_default_det_limit_reads_nine_line_region(tmp_home):
+    """DET_LIMIT_SIDE_LEN=512 的**基准断言**：这张九行图必须九行全中、关键词齐全。
+
+    背景：RapidOCR 默认 `limit_side_len=736` + `limit_type="min"` 会把短边放大到 736，
+    我们把它降到 512 换 ~38% 速度——本用例守住"降了之后没把行读丢"。
+    """
+    from sc_translator.ocr import DET_LIMIT_SIDE_LEN
+
+    assert DET_LIMIT_SIDE_LEN == 512, "改这个常数就得连本用例一起重新标定"
+    rows = OcrEngine().recognize(_nine_line_chat())
+    texts = [r.normalized() for r in rows]
+    assert len(rows) == 9, f"512 下应读出 9 行，实际 {len(rows)} 行：{texts}"
+    joined = " ".join(texts).lower()
+    for word in ("crispy", "quantum", "bounty", "valakkar", "escort", "party"):
+        assert word in joined, f"关键词 {word!r} 没读到：{joined}"
+
+
 def _qt_app():
     from PySide6.QtWidgets import QApplication
 

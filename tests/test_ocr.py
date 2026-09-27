@@ -107,3 +107,59 @@ def test_same_frame_skips_ocr_engine():
     changed[0, 0] = (255, 0, 0)                   # 画面变了必须重新识别
     eng.recognize(changed)
     assert len(calls) == 2, calls
+
+
+def test_segment_block_splits_glued_words_but_keeps_player_name():
+    """用户反馈：`takedisable` / `whichgivesyou` 这种粘连词没被切开。
+
+    阈值 14→8 后要能切开；但 `[频道] 玩家名:` 前缀不参与分词（玩家 ID 不能被拆）。
+    """
+    from sc_translator.ocr import segment_block_text
+
+    out = segment_block_text("[全局]Volt 09: You can takedisable the extra guns")
+    assert "take disable" in out, out
+    assert out.startswith("[全局]Volt 09:"), out
+
+    out2 = segment_block_text("[全局]killakillajules: whichgivesyou more capacity")
+    assert "killakillajules" in out2, out2
+    assert "which gives you" in out2, out2
+
+    # 词典里本来就是一个词的不拆
+    assert segment_block_text("crusader") == "crusader"
+    assert segment_block_text("interdictors") == "interdictors"
+    # 长粘连串里夹着 interdictors 时 wordninja 会给出 "interdict or s"（含单字母碎片）
+    # → 宁可不切（显示粘连）也不要显示被切错的词；上限与升级触发见 wordseg 注释
+    assert segment_block_text("interdictorsoutoflevsky") == "interdictorsoutoflevsky"
+
+
+def test_warmup_loads_model_once_under_concurrency(monkeypatch):
+    """预热线程与首次识别可能同时首次加载模型：只能加载一份（双重检查锁）。
+
+    背景：启动后几秒的预热线程，与用户恰好在这时按热键的识别线程会撞车；
+    没有锁时 RapidOCR 会被建两次（模型内存翻倍）。
+    """
+    import sys
+    import threading
+    import time
+    import types
+
+    built: list[int] = []
+
+    class _FakeRapidOCR:
+        def __init__(self, **kwargs):
+            time.sleep(0.05)              # 放大竞态窗口
+            built.append(1)
+
+    mod = types.ModuleType("rapidocr_onnxruntime")
+    mod.RapidOCR = _FakeRapidOCR
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", mod)
+
+    eng = OcrEngine(use_gpu=False)
+    threads = [threading.Thread(target=eng.warmup) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+
+    assert built == [1], f"模型被加载了 {len(built)} 次（应只加载一份）"
+    assert eng._engine is not None

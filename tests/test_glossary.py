@@ -41,6 +41,27 @@ def test_load_missing_returns_zero(tmp_path):
     assert glossary.load(str(tmp_path / "x.ini")) == 0
     assert glossary.configured() is False
 
+
+def test_apply_chat_keeps_player_name(tmp_path):
+    """用户反馈：玩家名 Cpt_Andromeda 被译成「Cpt_仙女座」。
+
+    聊天行只替换 `[频道] 玩家名:` 之后的正文；普通文本仍全量替换（回归）。
+    """
+    p = tmp_path / "g.ini"
+    p.write_text("Andromeda = 仙女座\nPyro = 派罗星系\n", encoding="utf-8")
+    glossary.load(str(p))
+    try:
+        line = "[全局]Cpt_Andromeda: it's the pyr omission working?"
+        out = glossary.apply_chat(line)
+        assert "Cpt_Andromeda" in out, out
+        assert "仙女座" not in out, out
+        # 普通文本（非聊天行）行为不变：整句都替换
+        assert glossary.apply("go to Andromeda") == "go to 仙女座"
+        # 没有前缀时 apply_chat 等价于 apply
+        assert glossary.apply_chat("Andromeda is nice") == "仙女座 is nice"
+    finally:
+        glossary.clear()
+
 # ------------------------------------------------------------------ 加载与性能回归
 def test_large_glossary_is_not_silently_truncated(tmp_path, monkeypatch):
     """回归：加载上限曾是 4000 且按文件顺序截断，导致 8000+ 条的术语表只装了一半、

@@ -315,6 +315,31 @@ def test_batch_translation_numbered_parsing():
     assert len(srv.completions) == 1  # 只发了一次请求
 
 
+def test_chat_batch_sends_untouched_player_name(tmp_home):
+    """聊天批译：送给模型的文本里，玩家名必须原样保留（术语表只换正文）。
+
+    用户反馈：`[全局]Cpt_Andromeda: …` 被译成 `[全局]Cpt_仙女座: …`。
+    """
+    from sc_translator import glossary
+
+    tmp_home.mkdir(parents=True, exist_ok=True)
+    g = tmp_home / "chat_terms.ini"
+    g.write_text("Andromeda = 仙女座\nStanton = 斯坦顿星系\n", encoding="utf-8")
+    glossary.load(str(g))
+    try:
+        srv = FakeServer(prefix="")
+        c = _client(srv)
+        c.translate_lines_batch(
+            ["[全局]Cpt_Andromeda: meet me at Stanton"], "en", "zh-CN", keep_chat_prefix=True
+        )
+        sent = srv.completions[0]["messages"][1]["content"]
+        assert "Cpt_Andromeda" in sent, sent
+        assert "仙女座" not in sent, sent
+        assert "斯坦顿星系" in sent, "正文里的专名仍应被替换"
+    finally:
+        glossary.clear()
+
+
 def test_dict_hit_skips_api(tmp_path):
     """词典优先：命中词条直接返回中文，不发请求。"""
     from sc_translator import gamedict

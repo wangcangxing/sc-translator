@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -181,4 +182,36 @@ def test_main_page_is_leaner_after_settings_move(qapp, tmp_home):
     qapp.processEvents()
     height = _main_page(win).sizeHint().height()
     assert height < 1500, f"主页面仍然太高（{height}px），设置项可能没搬走"
+    ctrl.shutdown()
+
+
+# ---------------------------------------------------------------- OCR 预热
+def test_prewarm_ocr_skips_when_hotkeys_disabled(qapp, tmp_home):
+    """热键停用时不预热（不白占 ~90MB 常驻内存）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home, snap_enabled=False)
+    ctrl.prewarm_ocr(delay_ms=0)
+    qapp.processEvents()
+    assert ctrl._threads == [], "热键停用却仍排了预热线程"
+    ctrl.shutdown()
+
+
+def test_prewarm_ocr_warms_engine_in_background(qapp, tmp_home, monkeypatch):
+    """启用热键时：到点在后台线程预热 OCR（第一次按热键不再等模型冷启动）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    calls = []
+
+    class _FakeOcr:
+        def warmup(self):
+            calls.append(1)
+
+    class _FakeSnap:
+        ocr = _FakeOcr()
+
+    monkeypatch.setattr(type(ctrl), "snapshot", property(lambda self: _FakeSnap()))
+    ctrl.prewarm_ocr(delay_ms=0)
+    end = time.time() + 3.0
+    while time.time() < end and not calls:
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert calls == [1], "预热没有真正调用 OCR 引擎"
     ctrl.shutdown()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass
 from typing import Optional
@@ -79,6 +80,23 @@ def insert_word_spaces(text: str) -> str:
     return s
 
 
+def segment_block_text(text: str) -> str:
+    """给一个 OCR 识别块补分词（粘连词切分 + camelCase/数字边界补空格）。
+
+    **玩家名前缀不动**：`[频道] 玩家名:` 先切下来，只处理正文；
+    否则玩家 ID（全小写长串）会被当粘连词拆开。
+    """
+    from .textutil import split_chat_prefix
+    from .wordseg import split_merged_lower
+
+    head, body = split_chat_prefix(text)
+    body = normalize_text(split_merged_lower(body))
+    if " " not in body and len(body) >= 8:
+        # 纯粘连块再补 camelCase/数字边界空格（TradingatArea18 -> Tradingat Area 18）
+        body = normalize_text(insert_word_spaces(body))
+    return normalize_text(head + body)
+
+
 def _cjk_ratio(text: str) -> float:
     # 保留旧名以保证向后兼容；实现已移到 textutil（纯文字路径不再依赖 OCR 栈）
     from .textutil import cjk_ratio
@@ -147,17 +165,27 @@ class OcrEngine:
             log.warning("请求 GPU 模式，但 onnxruntime 没有 GPU provider（需 pip install onnxruntime-directml），本次按 CPU 运行")
         self.gpu_active = bool(use_gpu and provs)     # 实际是否用上了 GPU
         self._kwargs = kwargs
+        self._lock = threading.Lock()                  # 预热线程与热键线程可能同时首次加载
         self._last_digest: Optional[bytes] = None      # 帧哈希 → 同画面复用结果
         self._last_rows: list[OcrLine] = []
 
     def _ensure(self):
         if self._engine is None:
-            from rapidocr_onnxruntime import RapidOCR
+            with self._lock:
+                if self._engine is None:      # 双重检查：预热与首次识别撞车时只加载一份模型
+                    from rapidocr_onnxruntime import RapidOCR
 
-            log.info("初始化 RapidOCR（首次加载模型需数秒；设备=%s）...", "GPU" if self.gpu_active else "CPU")
-            self._engine = RapidOCR(**self._kwargs)
-            log.info("RapidOCR 就绪（%s）", "GPU" if self.gpu_active else "CPU")
+                    log.info("初始化 RapidOCR（首次加载模型需数秒；设备=%s）...", "GPU" if self.gpu_active else "CPU")
+                    self._engine = RapidOCR(**self._kwargs)
+                    log.info("RapidOCR 就绪（%s）", "GPU" if self.gpu_active else "CPU")
         return self._engine
+
+    def warmup(self) -> None:
+        """预热：提前把模型加载好，第一次截图翻译不再背十几秒的冷启动。
+
+        由后台线程调用（见 `AppController.prewarm_ocr`）；加载失败由调用方处理。
+        """
+        self._ensure()
 
     def close(self) -> None:
         """释放引擎并清空缓存：切 CPU/GPU 模式或退出时用（GPU 会话占的显存随之归还）。"""
@@ -219,13 +247,8 @@ class OcrEngine:
                 text = normalize_text(text)
                 if not text or len(text) > 400 or score < 0.35:
                     continue
-                # 先词典分词（切粘连小写长段，无论该检测块内是否已有空格）
-                from .wordseg import split_merged_lower
-
-                text = normalize_text(split_merged_lower(text))
-                if " " not in text and len(text) >= 8:
-                    # 纯粘连块再补 camelCase/数字边界空格
-                    text = normalize_text(insert_word_spaces(text))
+                # 词典分词（切粘连小写长段；玩家名前缀不动，见 segment_block_text）
+                text = segment_block_text(text)
                 cx = int(round((left + right) / 2))
                 cy = int(round((top + bottom) / 2))
                 rows.append(

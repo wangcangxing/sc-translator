@@ -69,6 +69,39 @@ def test_filter_lines_caps_length():
     assert snapshot.filter_lines(["x" * 400]) == []
 
 
+# ------------------------------------------------------------------ 折行合并
+def test_merge_messages_joins_wrapped_chat_lines():
+    """用户反馈：一句被游戏折行拆成几行，逐行翻译后出现「网关」「rien」这种碎片。"""
+    raw = [
+        "[全局]Zak_kena:",
+        "watch out there are interdictors out of lev sky towards",
+        "stanton",
+        "gateway",
+        "[全局]UlygonikDemarly:",
+        "J'ai entendu dire qu'il y avait deds probleme avec le hull B non?",
+    ]
+    assert snapshot.merge_messages(raw) == [
+        "[全局]Zak_kena: watch out there are interdictors out of lev sky towards stanton gateway",
+        "[全局]UlygonikDemarly: J'ai entendu dire qu'il y avait deds probleme avec le hull B non?",
+    ]
+
+
+def test_merge_messages_keeps_ui_text_line_by_line():
+    """非聊天区域（UI/任务文本）不许硬并：没有消息头时行为与合并前一致。"""
+    assert snapshot.merge_messages(
+        ["Quantum drive ready", "Shields offline", "Cargo 12 SCU"]
+    ) == ["Quantum drive ready", "Shields offline", "Cargo 12 SCU"]
+
+
+def test_merge_messages_accepts_ocr_mangled_heads():
+    """OCR 认歪的括号 / 丢右括号（实测出现过「[全局Maelb:」）也要认成消息头。"""
+    raw = ["【全局】BAT-lsg: hi", "there", "[全局Maelb: 6到10M之间最好的船是什么"]
+    assert snapshot.merge_messages(raw) == [
+        "【全局】BAT-lsg: hi there",
+        "[全局Maelb: 6到10M之间最好的船是什么",
+    ]
+
+
 # ------------------------------------------------------------------ 流水线（替身）
 class _FakeCapture:
     """替身：实现新的 grab_ex 协议（返回 图像/后端/错误）。"""
@@ -156,6 +189,20 @@ def test_work_full_pipeline():
     assert client.calls[0][2] == "zh-CN"
     # 抓屏用的是区域里的物理矩形
     assert svc.capture.calls == [REGION["physical"]]
+
+
+def test_work_merges_wrapped_chat_lines_before_translating():
+    """流水线接线：折行先并回一条，再送翻译（不再是每行各译一次）。"""
+    client = _FakeClient()
+    svc = _svc(
+        ["[全局]Zak_kena:", "watch out there are interdictors out of lev sky towards", "stanton", "gateway"],
+        client,
+    )
+    res = svc._work(REGION, max_lines=10, use_cache=True)
+    assert client.calls[0][0] == [
+        "[全局]Zak_kena: watch out there are interdictors out of lev sky towards stanton gateway"
+    ]
+    assert [ln.source for ln in res.lines] == client.calls[0][0]
 
 
 def test_work_requires_region():

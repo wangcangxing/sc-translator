@@ -49,6 +49,140 @@ def test_overlay_is_created_and_hidden_by_default(qapp, tmp_home):
     ctrl.shutdown()
 
 
+def test_overlay_has_one_click_capture_button(qapp, tmp_home):
+    """浮窗上有一键截图翻译：游戏里全局热键失灵时的鼠标入口（用户要求）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    calls = []
+    ctrl.mainwin.on_snap_hotkey = lambda: calls.append(1)   # 替身：不真抓屏
+    ctrl.overlay._snap_btn.click()
+    assert calls == [1], "浮窗「截图翻译」按钮应复用主窗口的处理函数"
+    ctrl.shutdown()
+
+
+def _fake_focus(monkeypatch, current: int = 0x1234):
+    """把前台窗口帮手换成替身：记录"还给了哪个 hwnd"。"""
+    from sc_translator.ui import overlay as ovmod
+
+    restored: list[int] = []
+    monkeypatch.setattr(ovmod, "foreground_window", lambda: current)
+    monkeypatch.setattr(ovmod, "restore_foreground", lambda hwnd: restored.append(hwnd) or True)
+    return restored
+
+
+def _track_now(ov, hwnd: int) -> None:
+    """模拟轮询刚看到的外部前台窗口。"""
+    import time as _t
+
+    ov._last_fg = hwnd
+    ov._last_fg_at = _t.monotonic()
+
+
+def test_snap_button_returns_focus_to_game(qapp, tmp_home, monkeypatch):
+    """点完一键翻译要把前台还给游戏（点浮窗会让本进程接管前台，游戏就收不到键盘）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ctrl.settings.snap_region = {"physical": {"left": 0, "top": 0, "width": 10, "height": 10}}
+    restored = _fake_focus(monkeypatch)
+    _track_now(ctrl.overlay, 0x1234)                 # 刚看到游戏在前台
+    ctrl.mainwin.on_snap_hotkey = lambda: None
+    ctrl.overlay._snap_btn.click()
+    assert restored == [0x1234], "有区域 + 刚从游戏切过来 → 应把前台还回去"
+    ctrl.shutdown()
+
+
+def test_snap_button_ignores_stale_foreign_window(qapp, tmp_home, monkeypatch):
+    """桌面上用久了（上次外部前台早过期）→ 不动焦点，别把别的程序拽回前台。"""
+    import time as _t
+
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ctrl.settings.snap_region = {"physical": {"left": 0, "top": 0, "width": 10, "height": 10}}
+    restored = _fake_focus(monkeypatch)
+    ctrl.overlay._last_fg = 0x1234
+    ctrl.overlay._last_fg_at = _t.monotonic() - 10.0
+    ctrl.mainwin.on_snap_hotkey = lambda: None
+    ctrl.overlay._snap_btn.click()
+    assert restored == [], "过期的跟踪值不该触发前台切换"
+    ctrl.shutdown()
+
+
+def test_grip_snap_button_triggers_and_returns_focus(qapp, tmp_home, monkeypatch):
+    """穿透态下标题栏是隐藏的 → 一键翻译按钮必须在常驻小条上，且同样还焦点。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ctrl.settings.snap_region = {"physical": {"left": 0, "top": 0, "width": 10, "height": 10}}
+    restored = _fake_focus(monkeypatch)
+    _track_now(ctrl.overlay, 0x1234)
+    calls = []
+    ctrl.mainwin.on_snap_hotkey = lambda: calls.append(1)
+    grip_btn = ctrl.overlay._floating_grip._snap_btn
+    assert grip_btn.text(), "常驻小条上的一键翻译按钮应有文案"
+    grip_btn.click()
+    assert calls == [1], "小条按钮应复用同一个处理函数"
+    assert restored == [0x1234], "小条按钮同样要把前台还给游戏"
+    ctrl.shutdown()
+
+
+def test_foreground_poll_records_foreign_window(qapp, tmp_home, monkeypatch):
+    """轮询记下外部前台窗口（点击时它就是"该还回去的那个"）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    _fake_focus(monkeypatch, current=0xABCD)
+    ctrl.overlay._poll_foreground()
+    assert ctrl.overlay._last_fg == 0xABCD
+    ctrl.shutdown()
+
+
+def test_foreground_poll_skips_own_window(qapp, tmp_home, monkeypatch):
+    """轮询必须跳过我们自己的窗口——否则点击时拿到的是自己，焦点就还不回去（真机踩过）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    _fake_focus(monkeypatch, current=int(ctrl.overlay.winId()))
+    ctrl.overlay._poll_foreground()
+    assert ctrl.overlay._last_fg == 0
+    ctrl.shutdown()
+
+
+def test_snap_button_keeps_focus_when_no_region(qapp, tmp_home, monkeypatch):
+    """还没框选过区域时会进全屏框选，那一步需要焦点 → 不能把前台还回去。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ctrl.settings.snap_region = None
+    restored = _fake_focus(monkeypatch)
+    _track_now(ctrl.overlay, 0x1234)
+    ctrl.mainwin.on_snap_hotkey = lambda: None
+    ctrl.overlay._snap_btn.click()
+    assert restored == [], "进框选时不能抢走焦点"
+    ctrl.shutdown()
+
+
+def test_snap_button_does_not_restore_to_own_window(qapp, tmp_home, monkeypatch):
+    """点击前的前台是本程序自己的窗口（纯桌面使用）→ 不还焦点，别把别的程序拽回来。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ctrl.settings.snap_region = {"physical": {"left": 0, "top": 0, "width": 10, "height": 10}}
+    own = int(ctrl.mainwin.winId())
+    ctrl.overlay._last_fg = own
+    restored = _fake_focus(monkeypatch, current=own)
+    ctrl.mainwin.on_snap_hotkey = lambda: None
+    ctrl.overlay._snap_btn.click()
+    assert restored == [], "目标是我们自己时不该做任何前台切换"
+    ctrl.shutdown()
+
+
+def test_exchange_card_follows_theme_opacity(qapp, tmp_home):
+    """用户反馈：调低不透明度后，回话区是一块不透明黑。
+
+    根因是卡片自带不透明底色；样式必须由 theme.overlay_style 统一给出（才能随不透明度淡出）。
+    """
+    from PySide6.QtWidgets import QFrame
+
+    from sc_translator.ui.theme import overlay_style
+
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=True)
+    ctrl.overlay._add_exchange("你好", "Hello", "English")
+    cards = ctrl.overlay._exch_host.findChildren(QFrame, "ovExchCard")
+    assert cards, "问答卡片应使用统一对象名 ovExchCard"
+    assert not cards[0].styleSheet(), "卡片不该自带不透明底色"
+    css = overlay_style("dark", 30, 13)
+    assert "#ovExchCard" in css, "卡片样式应在 theme.overlay_style 里（才会随不透明度变化）"
+    assert "#ovWrap QWidget" in css, "浮窗内部要统一压掉不透明底色（应用级 QWidget 规则会补黑底）"
+    ctrl.shutdown()
+
+
 def test_push_lines_accumulates_and_dedupes(qapp, tmp_home):
     """两次截图翻译：同文只占一行，新文追加（历史累积，不是"整屏快照消失即删"）。"""
     ctrl = _mk_ctrl(qapp, tmp_home)

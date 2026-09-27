@@ -35,6 +35,56 @@ def unregister(hwnd: int, hotkey_id: int) -> None:
     _k32.UnregisterHotKey(wintypes.HWND(hwnd), hotkey_id)
 
 
+def foreground_window() -> int:
+    """当前前台窗口句柄（0 = 取不到 / 非 Windows）。"""
+    if _k32 is None:
+        return 0
+    try:
+        return int(_k32.GetForegroundWindow())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def restore_foreground(hwnd: int) -> bool:
+    """把前台窗口还给 ``hwnd``（点浮窗按钮后把键盘焦点还给游戏）。
+
+    为什么需要：点浮窗上的一键翻译按钮会让**本进程**接管前台，游戏随即收不到键盘；
+    而抓屏/翻译都在后台线程跑、结果自己会显示出来，所以点完就该立刻把前台还回去。
+
+    权限：Windows 只允许"当前前台进程"（我们刚被点过）或"刚收到输入的进程"改前台，
+    正常能直接成功；失败时再用 AttachThreadInput 把本线程的输入队列临时接到目标线程重试
+    （这是绕开 SetForegroundWindow 前台锁定限制的标准做法）。
+    """
+    if _k32 is None or not hwnd:
+        return False
+    try:
+        u32 = _k32
+        if not u32.IsWindow(wintypes.HWND(hwnd)):
+            return False
+        if int(u32.GetForegroundWindow()) == int(hwnd):
+            return True
+        if u32.SetForegroundWindow(wintypes.HWND(hwnd)):
+            return True
+        if not hasattr(ctypes, "windll"):
+            return False
+        cur = int(ctypes.windll.kernel32.GetCurrentThreadId())
+        fg = int(u32.GetForegroundWindow())
+        attached: list[int] = []
+        for tid in (
+            int(u32.GetWindowThreadProcessId(wintypes.HWND(fg), None)),
+            int(u32.GetWindowThreadProcessId(wintypes.HWND(hwnd), None)),
+        ):
+            if tid and tid != cur and u32.AttachThreadInput(cur, tid, True):
+                attached.append(tid)
+        try:
+            return bool(u32.SetForegroundWindow(wintypes.HWND(hwnd)))
+        finally:
+            for tid in attached:
+                u32.AttachThreadInput(cur, tid, False)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class QtHotkeyFilter(QAbstractNativeEventFilter):
     """捕获 WM_HOTKEY 并把回调投递到 GUI 线程。"""
 

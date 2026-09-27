@@ -63,6 +63,13 @@ SCTranslator\
   then drag/resize/right-click menu/「Copy all」; press 「✕」 to hide it and use 「Show overlay」 in the main window to bring it back
 - **Reply bar in the overlay**: tick 「Show reply bar in overlay」 to type a Chinese reply right there (Enter to translate, last 8 exchanges kept);
   whether the translation is auto-copied is controlled by the 「Auto-copy reply translations」 toggle (on by default)
+- **One-click translate in the overlay** (v0.4.10): the overlay carries a **🎯 Translate** button — in the pinned
+  header, and on the small always-visible chip while click-through (the default). When the global hotkey does not
+  respond in game, click it to capture & translate; afterwards the app **hands the foreground back to the game** so
+  your keyboard control returns immediately
+- **Sentences are no longer split apart** (v0.4.10): wrapped chat lines are merged back into one message before
+  translation; glued English (`takedisable` → `take disable`) is split first; the `[channel] Player:` prefix is never
+  run through the glossary — a player named `Cpt_Andromeda` stays `Cpt_Andromeda` (not 「Cpt_仙女座」)
 - Spicy mode toggle (normal ⇄ spicy prompt sets, user-editable)
 - Translation cache + multi-line batched requests + `Ctrl+Enter`, repeated text is never billed twice
 - **Full error logging**: startup crashes / uncaught exceptions / Qt warnings go to `data\logs\startup.log`;
@@ -138,8 +145,9 @@ idle cost is zero in CPU and in tokens.
 - **Recognition**: local RapidOCR (PaddleOCR onnx models ship with the app; fully offline, no cost)
 - **Translation**: your configured API, sharing the glossary and cache with text translation
   (`Stanton System` → 斯坦顿星系, `Pyro` → 派罗星系)
-- **Timing**: the first press loads the model (~1-3 s, then it stays in memory); afterwards each press takes
-  roughly **2-6 s** (OCR 1-3 s + translation 1-2 s)
+- **Timing**: about 3 s after startup the OCR model is **pre-warmed in the background** (v0.4.10), so even the first
+  press does not wait for the model (pre-warm takes ~0.4-0.5 s and costs ~+75 MB resident); afterwards each press takes
+  roughly **2-6 s** (OCR 0.3-0.5 s + translation 1-2 s)
 - **Settings** (v0.4.9): the **⚙ Settings** button (top right) opens a dialog holding provider/API key/model,
   the SC glossary, screenshot hotkeys, OCR acceleration and image-reading, where results go, the overlay,
   UI language and log access — the main window keeps only translation and capture controls
@@ -190,6 +198,10 @@ Area18=18 区
 
 Matching is **case-insensitive with word boundaries**, multi-word entries win; if no path is configured the bundled table is used.
 (Set `glossary_enabled` to false in `data\settings.json` to disable it entirely.)
+
+> For chat lines (screenshot translation / game chat) only the text **after the colon** is replaced: the
+> `[channel] Player:` prefix is left untouched, so a player named `Cpt_Andromeda` or `Pyro` is never translated
+> into Chinese (since v0.4.10).
 
 ## Run from source
 

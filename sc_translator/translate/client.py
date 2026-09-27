@@ -354,8 +354,9 @@ class OpenAiCompatClient:
         if not text:
             return ""
         # 术语表：SC 专名先就地换成中文（Stanton->斯坦顿星系），再走后续，避免 AI 翻错
+        # 聊天行只换正文，保住 [频道] 玩家名: 前缀（否则玩家名 Cpt_Andromeda 会变「Cpt_仙女座」）
         if target_lang.lower().startswith("zh") and glossary.configured():
-            text = glossary.apply(text)
+            text = glossary.apply_chat(text) if keep_chat_prefix else glossary.apply(text)
         # 已经是目标中文的内容直接原样返回，不浪费 API
         if target_lang.lower().startswith("zh") and _cjk_ratio(text) > 0.55:
             return text
@@ -390,7 +391,7 @@ class OpenAiCompatClient:
         # 清理模型可能附加的引号/前缀；术语表兜底替换漏网英文词条
         out = out.strip().strip('"').strip("“”‘’")
         if target_lang.lower().startswith("zh") and glossary.configured():
-            out = glossary.apply(out)
+            out = glossary.apply_chat(out) if keep_chat_prefix else glossary.apply(out)
         if self.cache is not None:
             self.cache.put(cache_model, source_lang, text, out)
         exchange_log.record("realtime", model, text, out=out, style=style)
@@ -407,9 +408,11 @@ class OpenAiCompatClient:
         target = "简体中文" if target_lang.lower().startswith("zh") else target_lang
         cache_model = self._cache_model() + ("#chat" if keep_chat_prefix else "")
         style = "spicy" if self.opts.spicy else "normal"
-        # 术语表预替换（SC 专名先中文化再送译）
+        # 术语表预替换（SC 专名先中文化再送译）；聊天行只换正文，保住玩家名前缀
         if target_lang.lower().startswith("zh") and glossary.configured():
-            texts = [glossary.apply(t) for t in texts]
+            texts = [
+                glossary.apply_chat(t) if keep_chat_prefix else glossary.apply(t) for t in texts
+            ]
 
         # 先处理“已经是中文”的行 + 命中缓存的行
         todo_idx: list[int] = []
@@ -477,7 +480,7 @@ class OpenAiCompatClient:
                 out = self.translate_line(texts[i], source_lang=source_lang, target_lang=target_lang,
                                           keep_chat_prefix=keep_chat_prefix)
             if target_lang.lower().startswith("zh") and glossary.configured():
-                out = glossary.apply(out)
+                out = glossary.apply_chat(out) if keep_chat_prefix else glossary.apply(out)
             results[i] = out
             if self.cache is not None:
                 self.cache.put(cache_model, source_lang, texts[i], out)
