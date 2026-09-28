@@ -507,6 +507,12 @@ class MainWindow(QMainWindow):
         self._ov_click_through.setToolTip(t("ovc.click_through.tip"))
         self._ov_click_through.toggled.connect(lambda v: self._on_ov_flag("click_through", v))
         vrow2.addWidget(self._ov_click_through)
+        # 顶栏样式（平铺 ⇄ 下拉菜单）：游戏里鼠标划过浮窗时容易被"引"出光标，收成菜单能少一大片可点区域
+        self._ov_menu_header = QCheckBox(t("ovc.menu_header"))
+        self._ov_menu_header.setChecked(bool(getattr(s, "menu_header", False)))
+        self._ov_menu_header.setToolTip(t("ovc.menu_header.tip"))
+        self._ov_menu_header.toggled.connect(lambda v: self._on_ov_flag("menu_header", v))
+        vrow2.addWidget(self._ov_menu_header)
         vrow2.addStretch(1)
         ovc.addLayout(vrow2)
 
@@ -707,6 +713,8 @@ class MainWindow(QMainWindow):
             return
         if name == "click_through":
             ov.apply_click_through()
+        elif name == "menu_header":
+            ov.apply_header_mode()
         elif name == "show_original":
             ov.rerender_rows()
         elif name == "always_show":
@@ -1587,6 +1595,7 @@ class MainWindow(QMainWindow):
             (getattr(self, "_ov_always", None), bool(s.always_show)),
             (getattr(self, "_ov_show_original", None), bool(s.show_original)),
             (getattr(self, "_ov_click_through", None), bool(s.click_through)),
+            (getattr(self, "_ov_menu_header", None), bool(getattr(s, "menu_header", False))),
             (getattr(self, "_snap_write_main", None), bool(s.snap_write_main)),
         ):
             if box is None:

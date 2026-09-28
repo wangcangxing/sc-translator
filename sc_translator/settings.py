@@ -55,6 +55,7 @@ class Settings:
     font_size: int = 14
     opacity: int = 92                  # 0-100 悬浮框背景不透明度
     max_entries: int = 120             # 悬浮框保留最大译文条数(超出滚动)
+    menu_header: bool = False          # 浮窗顶栏：False=平铺按钮；True=收进下拉菜单（减少可点击区域，少抢鼠标）
     # ---- 回话助手 ----
     reply_enabled: bool = False
     reply_target: str = "English"      # English / Japanese / Korean

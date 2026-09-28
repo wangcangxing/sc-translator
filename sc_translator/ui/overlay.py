@@ -222,10 +222,19 @@ class OverlayWindow(QWidget):
         self._btn_hide = btn_hide
         btn_hide.setToolTip(t("ov.hide.tip"))
         btn_hide.clicked.connect(self._on_hide_clicked)
+        # 「下拉菜单」样式的入口：把上面那些按钮收进一个菜单里。
+        # 存在理由（用户反馈）：浮窗上可点击的控件越多，游戏里鼠标划过时越容易把光标"引"出来；
+        # 收成一个按钮能明显减少可点击面积。默认仍是平铺，由设置 overlay_menu 切换。
+        self._more_btn = QPushButton("⋯", self._header)
+        self._more_btn.setObjectName("ovBtn")
+        self._more_btn.setFixedSize(22, 18)
+        self._more_btn.setToolTip(t("ov.more.tip"))
+        self._more_btn.clicked.connect(self._open_header_menu)
         hlay.addWidget(self._snap_btn)
         hlay.addWidget(self._spicy_btn)
         hlay.addWidget(self._ct_btn)
         hlay.addWidget(self._pin_btn)
+        hlay.addWidget(self._more_btn)
         hlay.addWidget(btn_hide)
         wlay.addWidget(self._header)
 
@@ -362,6 +371,7 @@ class OverlayWindow(QWidget):
         # 标题栏/手柄/缩放柄只在固定态需要
         self._header.setVisible(pinned)
         self._grip.setVisible(pinned)
+        self.apply_header_mode()          # 顶栏：平铺按钮 ⇄ 下拉菜单（按设置）
         self._pin_btn.setText(t("ov.unpin") if pinned else t("ov.pin"))
         self._refresh_ct_btn()
         self._floating_grip._style_refresh()
@@ -794,26 +804,57 @@ class OverlayWindow(QWidget):
         self._grip._start = None
         self._save_geometry()
 
-    def _show_menu(self, pos) -> None:
-        menu = QMenu(self)
+    def _build_overlay_menu(self) -> tuple["QMenu", dict]:
+        """构建浮窗操作菜单并返回 (菜单, 动作→回调)。
+
+        **构建与弹出分开**：一是右键菜单与顶栏「⋯」能共用同一套动作，二是测试可以只检查
+        菜单内容而不真的弹出一个模态菜单（弹了会一直等用户，测试会挂住）。
+        动作与平铺按钮一一对应（截图翻译 / 嘴臭 / 穿透 / 固定），外加复制·清空·隐藏。
+        """
         spicy_on = bool(self.ctx.settings.spicy_mode)
-        act_pin = menu.addAction(t("ov.menu.unpin") if self.pinned() else t("ov.menu.pin"))
-        act_spicy = menu.addAction(t("ov.menu.spicy_off") if spicy_on else t("ov.menu.spicy_on"))
+        menu = QMenu(self)
+        handlers: dict = {}
+        for label, fn in (
+            (t("ov.snap"), self._on_snap_clicked),
+            (t("ov.menu.spicy_off") if spicy_on else t("ov.menu.spicy_on"),
+             lambda: self.set_spicy_mode(not spicy_on)),
+            (t("ov.click_through.off") if self.pinned() else t("ov.click_through.on"),
+             self._toggle_click_through),
+            (t("ov.menu.unpin") if self.pinned() else t("ov.menu.pin"),
+             lambda: self.set_pinned(not self.pinned())),
+        ):
+            handlers[menu.addAction(label)] = fn
         menu.addSeparator()
-        act_copy = menu.addAction(t("ov.menu.copy"))
-        act_clear = menu.addAction(t("ov.menu.clear"))
-        act_hide = menu.addAction(t("ov.menu.hide"))
-        act = menu.exec(self._wrap.mapToGlobal(pos))
-        if act == act_pin:
-            self.set_pinned(not self.pinned())
-        elif act == act_spicy:
-            self.set_spicy_mode(not spicy_on)
-        elif act == act_copy:
-            self._copy_all()
-        elif act == act_clear:
-            self.clear_all()
-        elif act == act_hide:
-            self._on_hide_clicked()
+        handlers[menu.addAction(t("ov.menu.copy"))] = self._copy_all
+        handlers[menu.addAction(t("ov.menu.clear"))] = self.clear_all
+        handlers[menu.addAction(t("ov.menu.hide"))] = self._on_hide_clicked
+        return menu, handlers
+
+    def _open_overlay_menu(self, global_pos) -> None:
+        """在给定屏幕坐标弹出菜单，并把选中的动作派发出去。"""
+        menu, handlers = self._build_overlay_menu()
+        fn = handlers.get(menu.exec(global_pos))
+        if fn is not None:
+            fn()
+
+    def _show_menu(self, pos) -> None:
+        """右键菜单：在点击位置弹出。"""
+        self._open_overlay_menu(self._wrap.mapToGlobal(pos))
+
+    def _open_header_menu(self) -> None:
+        """顶栏「⋯」：在按钮下方弹出同一套菜单。"""
+        btn = self._more_btn
+        self._open_overlay_menu(btn.mapToGlobal(QPoint(0, btn.height())))
+
+    def apply_header_mode(self) -> None:
+        """按设置切换顶栏样式：平铺按钮 ⇄ 收进下拉菜单。
+
+        菜单模式只留「⋯」与「✕」两个可点控件（游戏里更不容易被鼠标扫到），功能一个不少。
+        """
+        menu_mode = bool(getattr(self.ctx.settings, "menu_header", False))
+        for w in (self._snap_btn, self._spicy_btn, self._ct_btn, self._pin_btn):
+            w.setVisible(not menu_mode)
+        self._more_btn.setVisible(menu_mode)
 
     @staticmethod
     def _html_to_plain(html_text: str) -> str:

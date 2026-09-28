@@ -509,6 +509,11 @@ _T: dict[str, tuple[str, str, str]] = {
     "ov.menu.copy": ("复制全部译文", "複製全部譯文", "Copy all translations"),
     "ov.menu.clear": ("清空", "清空", "Clear"),
     "ov.menu.hide": ("隐藏悬浮框", "隱藏懸浮框", "Hide overlay"),
+    "ov.more.tip": (
+        "更多操作：截图翻译 / 嘴臭 / 穿透 / 固定 / 复制 / 清空 / 隐藏（顶栏收进下拉菜单时用这个）",
+        "更多操作：截圖翻譯／嘴砲／穿透／固定／複製／清空／隱藏（頂欄收進下拉選單時用這個）",
+        "More actions: capture & translate, spicy, click-through, pin, copy, clear, hide",
+    ),
     "ov.toast.copied_rows": ("✅ 已复制 {n} 行译文", "✅ 已複製 {n} 行譯文", "✅ Copied {n} lines"),
     "ov.toast.nothing": (
         "没有可复制的内容（当前无译文行）",
@@ -600,6 +605,12 @@ _T: dict[str, tuple[str, str, str]] = {
         "穿透=不挡游戏操作：译文滚动区与回话条仍可点/可滚/可输入，其余区域（含空白）点击与滚轮交给下面的游戏；取消=整窗可交互（固定态，可拖动/缩放）。标题栏上也有同一个开关",
         "穿透=不擋遊戲操作：譯文捲動區與回話條仍可點/可滾/可輸入，其餘區域（含空白）點擊與滾輪交給下面的遊戲；取消=整窗可互動（固定態，可拖動/縮放）。標題列上也有同一個開關",
         "On = do not block the game: the transcript scroll area and the reply bar stay clickable/scrollable, while clicks and wheel over everything else (including empty space) go to the game below. Off = the whole window is interactive (pinned; draggable/resizable). The overlay title bar has the same switch",
+    ),
+    "ovc.menu_header": ("顶栏收进下拉菜单", "頂欄收進下拉選單", "Collapse header into a menu"),
+    "ovc.menu_header.tip": (
+        "开=浮窗顶栏只留「⋯」一个按钮（截图翻译/嘴臭/穿透/固定都在菜单里），能点的地方更少，游戏里更不容易被鼠标扫到；关=平铺按钮（原样）。右键菜单在两种样式下都可用",
+        "開=懸浮框頂欄只留「⋯」一個按鈕（截圖翻譯／嘴砲／穿透／固定都在選單裡），能點的地方更少，遊戲裡更不容易被滑鼠掃到；關=平鋪按鈕（原樣）。右鍵選單在兩種樣式下都可用",
+        "On = the overlay header keeps only one「⋯」button (capture & translate / spicy / click-through / pin all live in the menu), so there is far less clickable area to catch the in-game cursor; Off = the flat buttons (unchanged). The right-click menu works in both styles",
     ),
 
     # ---- 主窗口：截图翻译补充 ----

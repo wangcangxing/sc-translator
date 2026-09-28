@@ -183,6 +183,78 @@ def test_exchange_card_follows_theme_opacity(qapp, tmp_home):
     ctrl.shutdown()
 
 
+def test_overlay_header_flat_by_default(qapp, tmp_home):
+    """默认平铺：截图翻译/嘴臭/穿透/固定/✕ 都在，下拉菜单按钮不显示。
+
+    注意：顶栏只在**固定态**存在（穿透态只有顶部小条），所以先固定再断言。
+    """
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ov = ctrl.overlay
+    ov.show_overlay()
+    ov.set_pinned(True, notify_main=False)
+    qapp.processEvents()
+    for b in (ov._snap_btn, ov._spicy_btn, ov._ct_btn, ov._pin_btn, ov._btn_hide):
+        assert b.isVisible(), "平铺态这些按钮都应可见"
+    assert not ov._more_btn.isVisible(), "平铺态不该出现 ⋯ 菜单按钮"
+    ctrl.shutdown()
+
+
+def test_overlay_header_menu_mode_collapses_buttons(qapp, tmp_home):
+    """勾选「顶栏收进下拉菜单」后只留 ⋯ 与 ✕：可点区域变小（用户反馈：浮窗会抢鼠标）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home, menu_header=True)
+    ov = ctrl.overlay
+    ov.show_overlay()
+    ov.set_pinned(True, notify_main=False)
+    qapp.processEvents()
+    for b in (ov._snap_btn, ov._spicy_btn, ov._ct_btn, ov._pin_btn):
+        assert not b.isVisible(), "菜单态这些平铺按钮应收起"
+    assert ov._more_btn.isVisible(), "菜单态必须有 ⋯ 入口"
+    assert ov._btn_hide.isVisible(), "✕（立刻隐藏浮窗）两种样式都留着"
+    ctrl.shutdown()
+
+
+def test_overlay_header_menu_has_same_actions(qapp, tmp_home):
+    """收进菜单不能少功能：动作要与平铺按钮一一对应（只构建菜单，不真的弹出）。"""
+    from sc_translator.i18n import t as _t
+
+    ctrl = _mk_ctrl(qapp, tmp_home, menu_header=True)
+    menu, handlers = ctrl.overlay._build_overlay_menu()
+    labels = [a.text() for a in menu.actions() if a.text()]
+    assert labels[0] == _t("ov.snap"), labels
+    assert any(x in labels for x in (_t("ov.menu.spicy_on"), _t("ov.menu.spicy_off"))), labels
+    assert any(x in labels for x in (_t("ov.click_through.on"), _t("ov.click_through.off"))), labels
+    assert any(x in labels for x in (_t("ov.menu.pin"), _t("ov.menu.unpin"))), labels
+    assert _t("ov.menu.hide") in labels, labels
+
+    # 派发：选中「截图翻译」应走到主窗口那个入口（替身，不真抓屏）
+    calls: list[int] = []
+    ctrl.mainwin.on_snap_hotkey = lambda: calls.append(1)
+    handlers[[a for a in handlers if a.text() == _t("ov.snap")][0]]()
+    assert calls == [1]
+    ctrl.shutdown()
+
+
+def test_menu_header_setting_applies_without_restart(qapp, tmp_home):
+    """主窗口设置里勾选后立刻生效（用户要求"自由选择平铺还是下拉菜单"）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home)
+    ov = ctrl.overlay
+    ov.show_overlay()
+    ov.set_pinned(True, notify_main=False)
+    qapp.processEvents()
+    assert ov._snap_btn.isVisible()
+
+    ctrl.mainwin._ov_menu_header.setChecked(True)
+    qapp.processEvents()
+    assert ctrl.settings.menu_header is True, "设置应落盘"
+    assert not ov._snap_btn.isVisible() and ov._more_btn.isVisible()
+
+    ctrl.mainwin._ov_menu_header.setChecked(False)
+    qapp.processEvents()
+    assert ctrl.settings.menu_header is False
+    assert ov._snap_btn.isVisible() and not ov._more_btn.isVisible()
+    ctrl.shutdown()
+
+
 def test_push_lines_accumulates_and_dedupes(qapp, tmp_home):
     """两次截图翻译：同文只占一行，新文追加（历史累积，不是"整屏快照消失即删"）。"""
     ctrl = _mk_ctrl(qapp, tmp_home)
