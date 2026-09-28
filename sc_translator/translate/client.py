@@ -29,6 +29,19 @@ LANG_HINT = {
     "zh": "简体中文",
 }
 
+# 回话输出行的语言标记（与界面里的目标语言下拉项一一对应）：
+# 主窗口与浮窗都用它拼 "[en] 译文" 这类行，别再各写一份（会漂移）
+LANG_MARKS = {"English": "en", "Japanese": "ja", "Korean": "ko"}
+
+
+def compose_reply_lines(code_line: str, translation: str, target: str) -> str:
+    """回话两行格式的**唯一出处**：``[zh] @码`` 在前、``[en] 译文`` 在后。
+
+    主窗口「游戏聊天码」卡片、主窗口回话卡片、浮窗回话都走这里 —— 三处格式必须一致
+    （用户 2026-09-28 明确要求"统一格式"）。``target`` 决定译文行的标记（en/ja/ko）。
+    """
+    return f"{code_line}\n[{LANG_MARKS.get(target, 'en')}] {translation}"
+
 # 翻译提示词来自 prompts/*.md（可编辑；缺失时回退内置默认）
 
 _RETRY_STATUS = {429, 500, 502, 503, 504, 529}

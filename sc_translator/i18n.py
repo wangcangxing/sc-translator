@@ -555,6 +555,43 @@ _T: dict[str, tuple[str, str, str]] = {
     "ov.toast.copied_reply": ("✅ 已复制译文", "✅ 已複製譯文", "✅ Reply copied"),
     "ov.toast.copied_orig": ("✅ 已复制原文", "✅ 已複製原文", "✅ Original copied"),
 
+    # ---- 译文浮窗：中文码行（与回话翻译合并；本地转换不调 API）----
+    "ov.gc.off": ("@码：关", "@碼：關", "@code: off"),
+    "ov.gc.on": ("@码：开", "@碼：開", "@code: on"),
+    "ov.gc.tip": (
+        "中文码行：开 = 点「翻译」出两行（[zh] @码 + 外文译文；本机码表，不耗 API）；关 = 只出外文",
+        "中文碼行：開 = 點「翻譯」出兩行（[zh] @碼 + 外文譯文；本機碼表，不耗 API）；關 = 只出外文",
+        "Chinese code line: on = “Translate” returns two lines ([zh] @code + foreign text, local table, no API); off = foreign text only",
+    ),
+    "ov.menu.gc_on": ("开启中文码行（[zh] @码 + 译文）", "開啟中文碼行（[zh] @碼 + 譯文）", "Turn the Chinese code line on ([zh] @code + text)"),
+    "ov.menu.gc_off": ("关闭中文码行（只输出外文）", "關閉中文碼行（只輸出外文）", "Turn the Chinese code line off (foreign text only)"),
+    "ov.toast.gc_on": (
+        "已开启中文码行：翻译出两行（[zh] @码 + 外文）",
+        "已開啟中文碼行：翻譯出兩行（[zh] @碼 + 外文）",
+        "Chinese code line on: two lines per reply ([zh] @code + foreign text)",
+    ),
+    "ov.toast.gc_off": (
+        "已关闭中文码行：只输出外文译文",
+        "已關閉中文碼行：只輸出外文譯文",
+        "Chinese code line off: foreign text only",
+    ),
+    "ov.gc.fail": ("转 @码失败：{msg}", "轉 @碼失敗：{msg}", "Could not convert to @code: {msg}"),
+    "ov.toast.gc_empty": (
+        "没有可编码的中文，本次只出外文",
+        "沒有可編碼的中文，本次只出外文",
+        "Nothing to encode — foreign text only this time",
+    ),
+    "ov.toast.gc_missing": (
+        "⚠ 未找到汉化码表，本次只出外文（在主窗口「游戏聊天码」里指定 global.ini）",
+        "⚠ 未找到漢化碼表，本次只出外文（在主視窗「遊戲聊天碼」裡指定 global.ini）",
+        "⚠ No localization table found — foreign text only (set global.ini under “Game chat code” in the main window)",
+    ),
+    "ov.toast.reply_copied_code": (
+        "✅ 已生成两行（[zh] @码 + 外文）并复制，回游戏 Ctrl+V 粘贴",
+        "✅ 已生成兩行（[zh] @碼 + 外文）並複製，回遊戲 Ctrl+V 貼上",
+        "✅ Two lines generated ([zh] @code + foreign text) and copied — Ctrl+V in game",
+    ),
+
     # ---- 主窗口：浮窗相关勾选 ----
     # ---- 主窗口：截图翻译结果的显示位置 ----
     "snap.col_out": ("结果显示：", "結果顯示：", "Show results in:"),

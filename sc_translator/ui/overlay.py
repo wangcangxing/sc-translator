@@ -12,6 +12,10 @@
   点标题栏「取消固定」回到穿透态。
 - 标题栏上有「穿透：开/关」按钮，与主窗口「鼠标穿透」勾选**双向同步**。
 固定/穿透状态与主窗口“鼠标穿透”开关保持同步并持久化。
+- 浮窗内有一条**回话输入条**：输入中文点「翻译」出外文；顶栏「@码」按钮 / 下拉菜单项
+  可开**中文码行**，开了以后同一次翻译出两行 ``[zh] @码`` + ``[en] 译文``（码由本机
+  ``gamecode.encode`` 生成，不调 API；格式与主窗口两个卡片一致，见
+  ``translate.client.compose_reply_lines``），关着只出外文。该开关是运行时状态，不写设置。
 
 ctx 需要暴露：``settings``（含 ``save()``）、``mainwin.refresh_overlay_controls()``，
 以及可选的 ``translate_reply_async(text, target, done)``（浮窗回话；缺了就提示不可用）。
@@ -43,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from ..hotkeys import foreground_window, restore_foreground
 from ..i18n import t
+from ..translate.client import compose_reply_lines
 from .theme import palette, overlay_style
 
 log = logging.getLogger(__name__)
@@ -163,6 +168,8 @@ class OverlayWindow(QWidget):
         # 这样关掉主窗口时程序照常退出（Qt 对 Tool 窗口默认不加 WA_QuitOnClose）
         self.setAttribute(Qt.WA_QuitOnClose, False)
         self._user_hidden = False
+        # 中文码行开关（运行时状态，默认关＝只出外文；开＝多一行 [zh] @码）
+        self._code_line_on = False
         self._rows: dict[str, QWidget] = {}
         self._row_data: dict[str, dict] = {}                 # 行数据（供「显示原文」等即时重渲染）
         self._exchanges: list[tuple[str, str, str]] = []   # (原文, 译文, 目标语言)
@@ -206,6 +213,12 @@ class OverlayWindow(QWidget):
         self._spicy_btn.setObjectName("ovBtn")
         self._spicy_btn.setToolTip(t("ov.spicy.tip"))
         self._spicy_btn.clicked.connect(lambda: self.set_spicy_mode(not bool(self.ctx.settings.spicy_mode)))
+        # 中文码行开关（与回话翻译**合并**）：开 = 回话结果多一行 [zh] @码，关 = 只出外文。
+        # 入口放顶栏（平铺=按钮，菜单态=菜单项）；状态是运行时的，不写设置。
+        self._gc_btn_toggle = QPushButton("", self._header)
+        self._gc_btn_toggle.setObjectName("ovBtn")
+        self._gc_btn_toggle.setToolTip(t("ov.gc.tip"))
+        self._gc_btn_toggle.clicked.connect(lambda: self.set_code_line(not self._code_line_on))
         # 鼠标穿透开关（与主窗口那个勾选同一个设置，双向同步）：
         # 放在标题栏上，这样在浮动窗里就能直接切穿透/固定，不必回主窗口
         self._ct_btn = QPushButton("", self._header)
@@ -232,6 +245,7 @@ class OverlayWindow(QWidget):
         self._more_btn.clicked.connect(self._open_header_menu)
         hlay.addWidget(self._snap_btn)
         hlay.addWidget(self._spicy_btn)
+        hlay.addWidget(self._gc_btn_toggle)
         hlay.addWidget(self._ct_btn)
         hlay.addWidget(self._pin_btn)
         hlay.addWidget(self._more_btn)
@@ -470,6 +484,8 @@ class OverlayWindow(QWidget):
         self._floating_grip._style_refresh()
         if getattr(self, "_spicy_btn", None) is not None:
             self._refresh_spicy_btn()
+        if getattr(self, "_gc_btn_toggle", None) is not None:
+            self._refresh_gc_btn()
 
     def _restore_geometry(self) -> None:
         g = self.ctx.settings.overlay_geometry
@@ -515,6 +531,7 @@ class OverlayWindow(QWidget):
         self._snap_btn.setText(t("ov.snap"))
         self._snap_btn.setToolTip(t("ov.snap.tip"))
         self._spicy_btn.setToolTip(t("ov.spicy.tip"))
+        self._gc_btn_toggle.setToolTip(t("ov.gc.tip"))
         self._ct_btn.setToolTip(t("ovc.click_through.tip"))
         self._pin_btn.setToolTip(t("ov.pin.tip"))
         self._btn_hide.setToolTip(t("ov.hide.tip"))
@@ -524,6 +541,7 @@ class OverlayWindow(QWidget):
         self._reply_clear.setText(t("ov.reply.clear"))
         self._floating_grip.retranslate()
         self._refresh_spicy_btn()
+        self._refresh_gc_btn()
         self._apply_pin_state()
         self._rebuild_exchanges()
         self._update_count()
@@ -559,6 +577,63 @@ class OverlayWindow(QWidget):
         现在穿透态下回话条本身就归浮窗处理（见 nativeEvent），输入不受影响。
         """
         self._reply_panel.setVisible(on)
+
+    # ---------------------------------------------------------- 中文码行（与回话合并）
+    def code_line_on(self) -> bool:
+        """是否在回话结果里追加一行中文码（``[zh] @…``）。"""
+        return bool(self._code_line_on)
+
+    def set_code_line(self, on: bool, notify_main: bool = False) -> None:
+        """开/关「中文码行」。
+
+        开：点「翻译」后结果是两行 —— ``[en] 译文`` 换行 ``[zh] @码``（用户指定的顺序）；
+        关：只出外文译文。
+        码行要在**回话输入条**里打字，所以开启时顺手把回话条打开（并把 ``reply_enabled``
+        落盘 + 同步主窗口勾选），否则会出现"开关打开了却无处输入"的死开关。
+        """
+        self._code_line_on = bool(on)
+        if on and not self.ctx.settings.reply_enabled:
+            self.ctx.settings.reply_enabled = True
+            self.ctx.settings.save()
+            if self.ctx.mainwin is not None:
+                self.ctx.mainwin.refresh_overlay_controls()
+        self.set_reply_enabled(bool(self.ctx.settings.reply_enabled))
+        self._refresh_gc_btn()
+        self._show_toast(t("ov.toast.gc_on") if on else t("ov.toast.gc_off"), 3000)
+        self._bump_idle()
+
+    def _refresh_gc_btn(self) -> None:
+        """顶栏「@码」按钮：开着时高亮（与嘴臭/穿透按钮同一套配色约定）。"""
+        on = self.code_line_on()
+        c = palette(self.ctx.settings.theme)
+        self._gc_btn_toggle.setText(t("ov.gc.on") if on else t("ov.gc.off"))
+        self._gc_btn_toggle.setStyleSheet(
+            f"background:transparent;border:none;color:{c['accent'] if on else c['muted']};"
+            f"font-size:12px;font-weight:{'700' if on else '400'};"
+        )
+
+    def _compose_reply(self, zh_text: str, target: str, translation: str) -> tuple[str, str]:
+        """按「中文码行」开关拼装回话结果，返回 ``(发给游戏的两行文本, 退化提示)``。
+
+        开：``[zh] @码`` 换行 ``[en] 译文``（**与主窗口两个卡片同一种格式**，
+        由 ``translate.client.compose_reply_lines`` 统一给定，别再各写一份）；
+        关：只给外文译文。
+        码表缺失/没有可编码的中文时**退化为只出译文**，并把原因当提示返回——不静默假装成功。
+        """
+        if not self._code_line_on:
+            return translation, ""
+        from .. import gamecode
+
+        if not gamecode.configured():
+            return translation, t("ov.toast.gc_missing")
+        try:
+            code_line = gamecode.encode(zh_text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("浮窗生成中文码行失败: %s", exc)
+            return translation, t("ov.gc.fail", msg=str(exc)[:80])
+        if not code_line:
+            return translation, t("ov.toast.gc_empty")
+        return compose_reply_lines(code_line, translation, target), ""
 
     # ---------------------------------------------------------- 数据
     def push_lines(self, rows: list[dict]) -> None:
@@ -816,6 +891,8 @@ class OverlayWindow(QWidget):
         handlers: dict = {}
         for label, fn in (
             (t("ov.snap"), self._on_snap_clicked),
+            (t("ov.menu.gc_off") if self._code_line_on else t("ov.menu.gc_on"),
+             lambda: self.set_code_line(not self._code_line_on)),
             (t("ov.menu.spicy_off") if spicy_on else t("ov.menu.spicy_on"),
              lambda: self.set_spicy_mode(not spicy_on)),
             (t("ov.click_through.off") if self.pinned() else t("ov.click_through.on"),
@@ -852,7 +929,7 @@ class OverlayWindow(QWidget):
         菜单模式只留「⋯」与「✕」两个可点控件（游戏里更不容易被鼠标扫到），功能一个不少。
         """
         menu_mode = bool(getattr(self.ctx.settings, "menu_header", False))
-        for w in (self._snap_btn, self._spicy_btn, self._ct_btn, self._pin_btn):
+        for w in (self._snap_btn, self._spicy_btn, self._gc_btn_toggle, self._ct_btn, self._pin_btn):
             w.setVisible(not menu_mode)
         self._more_btn.setVisible(menu_mode)
 
@@ -885,7 +962,9 @@ class OverlayWindow(QWidget):
     # ---------------------------------------------------------- 回话（问答对）
     def _send_reply(self) -> None:
         """把输入的中文翻译为外文，生成一条【原文+回复】问答对显示在悬浮窗。
-        自动复制开关开启时复制译文；否则可点该问答对的复制按钮或手动选中文本复制。"""
+
+        「中文码行」开着时回复是**两行**（[en] 译文 + [zh] @码），关着只出外文（见 ``_compose_reply``）。
+        自动复制开关开启时复制回复；否则可点该问答对的复制按钮或手动选中文本复制。"""
         text = self._reply_input.text().strip()
         if not text or self._reply_busy:
             return
@@ -906,10 +985,18 @@ class OverlayWindow(QWidget):
             self._reply_btn.setEnabled(True)
             self._reply_input.setPlaceholderText(t("ov.reply.ph"))
             if ok:
-                self._add_exchange(text, result, target)
+                body, note = self._compose_reply(text, target, result)
+                self._add_exchange(text, body, target)
                 if self.ctx.settings.auto_copy_reply:
-                    self._copy_to_clipboard(result)
-                    self._show_toast(t("ov.toast.reply_copied"), 5000)
+                    self._copy_to_clipboard(body)
+                    if not note:
+                        self._show_toast(
+                            t("ov.toast.reply_copied_code") if self._code_line_on
+                            else t("ov.toast.reply_copied"),
+                            5000,
+                        )
+                if note:      # 退化提示（码表缺失/无可编码中文）：把"这次没带码行"说清楚
+                    self._show_toast(note, 6000)
             else:
                 self._show_toast(t("ov.toast.reply_fail", msg=str(result)[:80]), 5000)
 

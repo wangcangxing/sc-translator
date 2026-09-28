@@ -36,6 +36,7 @@ from .. import i18n
 from ..i18n import t
 from ..paths import logs_dir
 from ..settings import PROVIDER_PRESETS
+from ..translate.client import compose_reply_lines
 from .widgets import HotkeyEdit, KeyLine, make_card
 
 log = logging.getLogger(__name__)
@@ -385,6 +386,12 @@ class MainWindow(QMainWindow):
         self._btn_snap_region = QPushButton(t("snap.btn_region"))
         self._btn_snap_region.clicked.connect(self.on_snap_select_hotkey)
         srow.addWidget(self._btn_snap_region)
+        # 「显示浮窗」也属于工作流：浮窗在游戏里被 ✕ 关掉后，回主界面一眼就能叫回来，
+        # 不必再翻设置对话框（第 43 轮按用户要求从设置里搬出来）。
+        self._btn_ov_show = QPushButton(t("ov.show"))
+        self._btn_ov_show.setToolTip(t("ov.show.tip"))
+        self._btn_ov_show.clicked.connect(self._show_overlay)
+        srow.addWidget(self._btn_ov_show)
         srow.addStretch(1)
         snap.addLayout(srow)
 
@@ -516,7 +523,7 @@ class MainWindow(QMainWindow):
         vrow2.addStretch(1)
         ovc.addLayout(vrow2)
 
-        # 回话输入条 / 自动复制 / 手动叫回浮窗（在浮窗里点过 ✕ 之后用）
+        # 回话输入条 / 自动复制（「显示浮窗」按钮已按用户要求搬到主界面截图卡片那行）
         orow = QHBoxLayout()
         self._ov_reply = QCheckBox(t("chk.ov_reply"))
         self._ov_reply.setChecked(bool(s.reply_enabled))
@@ -528,10 +535,6 @@ class MainWindow(QMainWindow):
         self._ov_autocopy.setToolTip(t("chk.ov_autocopy.tip"))
         self._ov_autocopy.toggled.connect(self._on_ov_autocopy_toggled)
         orow.addWidget(self._ov_autocopy)
-        self._btn_ov_show = QPushButton(t("ov.show"))
-        self._btn_ov_show.setToolTip(t("ov.show.tip"))
-        self._btn_ov_show.clicked.connect(self._show_overlay)
-        orow.addWidget(self._btn_ov_show)
         orow.addStretch(1)
         ovc.addLayout(orow)
         self._sec_overlay.addWidget(ov_card)
@@ -1501,8 +1504,6 @@ class MainWindow(QMainWindow):
         self._run_async(work, "翻译中…", extra=post)
 
     # ---------------- 输出组合（中文码 / 译文）----------------
-    _LANG_MARK = {"English": "en", "Japanese": "ja", "Korean": "ko"}
-
     def _on_reply_out_toggled(self, which: str) -> None:
         """回话输出勾选：不允许两个都空，勾选状态落盘。"""
         reverted = False
@@ -1541,7 +1542,8 @@ class MainWindow(QMainWindow):
     def _compose_reply(self, zh_text: str, target: str, translation: str) -> tuple[str, str]:
         """按勾选拼装回话结果。
 
-        - 中文码 + 译文：``[zh] @中文码`` 换行 ``[en] 译文``（双方都看得懂）
+        - 中文码 + 译文：``[zh] @中文码`` 换行 ``[en] 译文``（双方都看得懂；格式见
+          ``translate.client.compose_reply_lines``，与浮窗共用同一处定义）
         - 只译文：仅译文（默认）
         - 只中文码：在上面单独处理（不需要 API）
         """
@@ -1550,8 +1552,7 @@ class MainWindow(QMainWindow):
         code_line, note = self._reply_code_line(zh_text)
         if not code_line:
             return translation, note + "（本次只输出译文）"
-        mark = self._LANG_MARK.get(target, "en")
-        return f"{code_line}\n[{mark}] {translation}", ""
+        return compose_reply_lines(code_line, translation, target), ""
 
     def _run_async(self, work, status: str, extra=None) -> None:
         self._busy = True

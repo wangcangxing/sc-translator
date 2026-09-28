@@ -657,3 +657,148 @@ def test_push_lines_scrolls_to_bottom(qapp, tmp_home):
     push(1, "C")
     assert sb.value() == sb.maximum(), f"新结果应回到最底部：{sb.value()}/{sb.maximum()}"
     ctrl.shutdown()
+
+
+# ---------------------------------------------------------------- 浮窗：中文码行（与回话合并）
+# 迷你码表（与原格式一致：码 = 序号 base36）：你好吗 -> [zh] @IH@E8@AP
+_GC_TABLE = "\n".join(["AP=吗", "E8=好", "IH=你"])
+
+
+def _load_fake_gc_table() -> None:
+    from sc_translator import gamecode
+
+    gamecode.load_text(_GC_TABLE, src="<test>")
+
+
+def _fake_translate(ctrl, reply: str = "How are you") -> None:
+    """把后台翻译换成同步替身（不联网）。"""
+    ctrl.translate_reply_async = lambda text, target, done: done(True, reply)
+
+
+def test_overlay_reply_is_foreign_only_by_default(qapp, tmp_home):
+    """默认没开中文码行：点「翻译」只出外文（与合并前的行为一致）。"""
+    from PySide6.QtWidgets import QApplication
+
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=True, auto_copy_reply=True)
+    _load_fake_gc_table()
+    _fake_translate(ctrl)
+    ov = ctrl.overlay
+    assert ov.code_line_on() is False
+    assert "关" in ov._gc_btn_toggle.text() or "off" in ov._gc_btn_toggle.text(), ov._gc_btn_toggle.text()
+
+    ov._reply_input.setText("你好吗")
+    ov._reply_btn.click()
+    assert QApplication.clipboard().text() == "How are you"
+    assert ov._exchanges == [("你好吗", "How are you", "English")]
+    ctrl.shutdown()
+
+
+def test_overlay_code_line_on_returns_two_lines(qapp, tmp_home):
+    """开中文码行：同一次翻译出两行 —— [zh] @码 换行 [en] 译文（与主窗口同格式）。"""
+    from PySide6.QtWidgets import QApplication
+
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=True, auto_copy_reply=True)
+    _load_fake_gc_table()
+    _fake_translate(ctrl)
+    ov = ctrl.overlay
+    ov.set_code_line(True)
+    assert ov.code_line_on() is True
+    assert "开" in ov._gc_btn_toggle.text() or "on" in ov._gc_btn_toggle.text(), ov._gc_btn_toggle.text()
+
+    ov._reply_input.setText("你好吗")
+    ov._reply_btn.click()
+    expect = "[zh] @IH@E8@AP\n[en] How are you"
+    assert QApplication.clipboard().text() == expect
+    assert ov._exchanges == [("你好吗", expect, "English")], ov._exchanges
+    ctrl.shutdown()
+
+
+def test_overlay_code_line_follows_target_language(qapp, tmp_home):
+    """目标语言换成 Korean 时标记跟着变（[ko]），码行仍是 [zh]。"""
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=True)
+    _load_fake_gc_table()
+    _fake_translate(ctrl, "안녕하세요")
+    ov = ctrl.overlay
+    ov._reply_target.setCurrentText("Korean")
+    ov.set_code_line(True)
+    ov._reply_input.setText("你好吗")
+    ov._send_reply()
+    assert ov._exchanges[0][1] == "[zh] @IH@E8@AP\n[ko] 안녕하세요", ov._exchanges
+    ctrl.shutdown()
+
+
+def test_code_line_format_is_unified_with_main_window(qapp, tmp_home):
+    """用户要求"统一格式"：浮窗与主窗口回话卡片必须是同一种两行格式。
+
+    这条是**跨处交叉校验**（不是各自照着自己的常量断言）：两处对同一输入必须得到同一个串。
+    """
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=True)
+    _load_fake_gc_table()
+    win, ov = ctrl.mainwin, ctrl.overlay
+    win._reply_out_code.setChecked(True)      # 主窗口回话卡片：码行 + 译文
+    win._reply_out_foreign.setChecked(True)
+    ov.set_code_line(True)
+    assert ov._compose_reply("你好吗", "English", "How are you")[0] == \
+        win._compose_reply("你好吗", "English", "How are you")[0] == "[zh] @IH@E8@AP\n[en] How are you"
+    ctrl.shutdown()
+
+
+def test_overlay_code_line_without_table_degrades(qapp, tmp_home, monkeypatch):
+    """开着码行但没有汉化码表：退化为只出外文 + 可读提示（不静默、不抛异常）。"""
+    from PySide6.QtWidgets import QApplication
+
+    from sc_translator import gamecode
+
+    monkeypatch.setattr(gamecode, "autodetect", lambda roots=None: None, raising=False)
+    ctrl = _mk_ctrl(qapp, tmp_home, gamecode_ini_path="", reply_enabled=True, auto_copy_reply=True)
+    assert not gamecode.configured()
+    _fake_translate(ctrl)
+    ov = ctrl.overlay
+    ov.set_code_line(True)
+    QApplication.clipboard().setText("(未复制)")
+    ov._reply_input.setText("你好吗")
+    ov._reply_btn.click()
+    assert QApplication.clipboard().text() == "How are you", "没有码表时应退化为只出外文"
+    assert ov._exchanges[0][1] == "How are you"
+    assert ov._counter_toast.text().strip(), "应给出提示而不是静默失败"
+    ctrl.shutdown()
+
+
+def test_overlay_code_line_entry_in_both_header_styles(qapp, tmp_home):
+    """平铺=顶栏按钮，下拉菜单态=收进菜单；两处都能开关（用户要求放进下拉列表）。"""
+    from sc_translator.i18n import t as _t
+
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=True)
+    ov = ctrl.overlay
+    ov.show_overlay()
+    ov.set_pinned(True, notify_main=False)
+    qapp.processEvents()
+    assert ov._gc_btn_toggle.isVisible(), "平铺态应有 @码 按钮"
+
+    ctrl.mainwin._ov_menu_header.setChecked(True)
+    qapp.processEvents()
+    assert not ov._gc_btn_toggle.isVisible(), "菜单态应把按钮收进菜单"
+    menu, handlers = ov._build_overlay_menu()
+    labels = [a.text() for a in menu.actions() if a.text()]
+    assert _t("ov.menu.gc_on") in labels, labels
+    handlers[[a for a in handlers if a.text() == _t("ov.menu.gc_on")][0]]()
+    assert ov.code_line_on() is True, "菜单项应能把中文码行打开"
+
+    menu2, handlers2 = ov._build_overlay_menu()
+    labels2 = [a.text() for a in menu2.actions() if a.text()]
+    assert _t("ov.menu.gc_off") in labels2, labels2
+    handlers2[[a for a in handlers2 if a.text() == _t("ov.menu.gc_off")][0]]()
+    assert ov.code_line_on() is False, "再点一次应关掉"
+    ctrl.shutdown()
+
+
+def test_overlay_code_line_on_opens_reply_bar(qapp, tmp_home):
+    """开码行必须先有输入条：reply_enabled=False 时自动打开并落盘（避免死开关）。"""
+    ctrl = _mk_ctrl(qapp, tmp_home, reply_enabled=False)
+    ov = ctrl.overlay
+    assert ov._reply_panel.isHidden()
+    ov.set_code_line(True)
+    assert not ov._reply_panel.isHidden(), "开码行后回话输入条应出现"
+    assert ctrl.settings.reply_enabled is True, "应落盘"
+    assert ctrl.mainwin._ov_reply.isChecked() is True, "主窗口勾选应同步"
+    ctrl.shutdown()

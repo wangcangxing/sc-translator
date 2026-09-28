@@ -147,7 +147,7 @@ def test_settings_widgets_moved_into_dialog(qapp, tmp_home):
         "写入主窗口": win._snap_write_main, "CPU 亲和": win._cpu_pin, "GPU 加速": win._ocr_gpu,
         "模型读图": win._ocr_vision, "常驻显示": win._ov_always, "浮窗字号": win._ov_font,
         "浮窗不透明度": win._ov_opacity, "鼠标穿透": win._ov_click_through,
-        "回话输入条": win._ov_reply, "回话自动复制": win._ov_autocopy, "显示浮窗": win._btn_ov_show,
+        "回话输入条": win._ov_reply, "回话自动复制": win._ov_autocopy,
         "界面语言": win._lang, "日志": win._btn_logs,
     }
     for name, w in moved.items():
@@ -157,16 +157,21 @@ def test_settings_widgets_moved_into_dialog(qapp, tmp_home):
 
 
 def test_core_workflow_widgets_stay_on_main_page(qapp, tmp_home):
-    """核心翻译区留在主界面：翻译按钮、回话按钮、截图触发、结果框、状态栏、齿轮。"""
+    """核心翻译区留在主界面：翻译按钮、回话按钮、截图触发、结果框、状态栏、齿轮。
+
+    「显示浮窗」也在这一组：浮窗被 ✕ 关掉后要能一眼叫回来（第 43 轮按用户要求从设置里搬出来）。
+    """
     ctrl = _mk_ctrl(qapp, tmp_home)
     win = ctrl.mainwin
     page = _main_page(win)
     for name, w in {
         "状态栏": win._status, "齿轮": win._btn_settings,
         "立即截图翻译": win._btn_snap_now, "框选区域": win._btn_snap_region,
+        "显示浮窗": win._btn_ov_show,
         "截图原文框": win._snap_src, "截图译文框": win._snap_dst,
     }.items():
         assert page.isAncestorOf(w), f"{name} 应留在主界面"
+        assert not win._settings_dialog.isAncestorOf(w), f"{name} 不该又在设置对话框里"
     ctrl.shutdown()
 
 
