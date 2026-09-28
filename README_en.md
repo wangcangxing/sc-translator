@@ -61,8 +61,17 @@ SCTranslator\
 - **Persistent translation overlay** (removed in 0.4.0, wired back in): screenshot results **accumulate** in an always-on-top frame —
   one row per unique line, capped by `max_entries` (default 120, scrolls beyond that). Click-through until you press 「☰ Pin」,
   then drag/resize/right-click menu/「Copy all」; press 「✕」 to hide it and use 「Show overlay」 in the main window to bring it back
+  (since v0.4.11 that button sits next to 「Capture & translate」 / 「Select region」 on the screenshot card)
+- **Two header styles** (v0.4.11): tick 「Collapse header into a menu」 under *Translation overlay* and the four
+  header buttons (capture / spicy / click-through / pin) fold into a single **⋯** menu, leaving only ⋯ and ✕ —
+  far less clickable area, so the game cursor is less likely to be "pulled out" when the mouse crosses the overlay
+  (**flat is still the default**, so an upgrade changes nothing until you tick it)
 - **Reply bar in the overlay**: tick 「Show reply bar in overlay」 to type a Chinese reply right there (Enter to translate, last 8 exchanges kept);
   whether the translation is auto-copied is controlled by the 「Auto-copy reply translations」 toggle (on by default)
+- **Reply with the in-game `@code`** (v0.4.11): click **「@code」** on the overlay header (in menu mode: 「Turn the Chinese
+  code line on」 inside the ⋯ menu) and one 「Translate」 produces two lines — ``[zh] @code`` + ``[en] translation``
+  (Chinese readers parse the code, foreign readers read the translation). With it off you send the foreign text only.
+  If this machine has no localized code table, it **falls back to the translation only** and says so on the overlay
 - **One-click translate in the overlay** (v0.4.10): the overlay carries a **🎯 Translate** button — in the pinned
   header, and on the small always-visible chip while click-through (the default). When the global hotkey does not
   respond in game, click it to capture & translate; afterwards the app **hands the foreground back to the game** so
