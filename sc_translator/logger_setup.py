@@ -42,11 +42,21 @@ def setup_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
-    # 避免重复初始化
+    # 清掉自己之前装的 handler（按标记），但不提前 return：第三方（pytest/coverage 等）
+    # 挂的 handler 要一并移除，否则会残留、重复输出。
     for h in list(root.handlers):
         if getattr(h, "_sc_translator_own", False):
-            return
-        root.removeHandler(h)
+            root.removeHandler(h)
+            try:
+                h.close()
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            root.removeHandler(h)
+
+    # 重配时清空环形缓冲：否则切 DEBUG/INFO 后 UI 日志面板仍显示上一档的旧行
+    with ring._lock:
+        ring._lines.clear()
 
     fh = RotatingFileHandler(log_file(), maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
     fh.setFormatter(logging.Formatter(_FMT))

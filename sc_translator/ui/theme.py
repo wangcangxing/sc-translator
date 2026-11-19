@@ -113,6 +113,9 @@ def overlay_style(theme: str, opacity_pct: int, font_size: int) -> str:
     alpha = max(20, min(100, opacity_pct))
     bg_hex = _with_alpha(c["bg"], alpha)
     row_hex = _with_alpha(c["row_bg"], max(35, alpha - 12))
+    # 应用级 stylesheet 的 QScrollBar::handle 是不透明色（build_stylesheet 里给主窗口用的），
+    # 半透明浮窗里会露出一条深色实心条；这里用带 alpha 的同色覆盖它（选择器更具体，且只作用于 #ovWrap）。
+    handle_hex = _with_alpha(c["line"], min(100, alpha + 10))
     return f"""
 #ovWrap {{
     background-color: {bg_hex};
@@ -150,6 +153,10 @@ QLineEdit#ovInput {{
 QComboBox#ovInput {{ background-color: {_with_alpha(c['input_bg'], min(100, alpha + 20))}; }}
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
+/* 覆盖应用级不透明的 QScrollBar::handle（坑点#8）：浮窗里手柄也随不透明度淡出 */
+#ovWrap QScrollBar::handle:vertical {{ background: {handle_hex}; border-radius: 5px; min-height: 24px; }}
+#ovWrap QScrollBar::handle:horizontal {{ background: {handle_hex}; border-radius: 5px; min-width: 24px; }}
+#ovWrap QScrollBar::handle:vertical:hover, #ovWrap QScrollBar::handle:horizontal:hover {{ background: {_with_alpha(c['accent'], min(100, alpha + 10))}; }}
 """
 
 

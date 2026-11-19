@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
+from ..i18n import t
 from .theme import palette
 
 
@@ -42,8 +43,8 @@ class HotkeyEdit(QLineEdit):
         super().__init__(parent)
         self.setText(spec)
         self.setReadOnly(True)
-        self.setPlaceholderText("点击后按组合键")
-        self.setToolTip("点击这里，然后按下你想用的组合键（Esc 取消）。")
+        self.setPlaceholderText(t("widget.hotkey.ph"))
+        self.setToolTip(t("widget.hotkey.tip"))
         self._on_edit_start = on_edit_start
         self._on_edit_done = on_edit_done
         self._editing = False
@@ -92,7 +93,7 @@ class HotkeyEdit(QLineEdit):
             return
         spec = spec_from_qt(key, ev.modifiers().value, ev.text())
         if spec is None:
-            self.setToolTip("这个键不能作为热键：纯字母/数字请搭配 Ctrl/Shift/Alt/Win（如 Ctrl+S）；Esc 取消。")
+            self.setToolTip(t("widget.hotkey.invalid"))
             self.setText(self._spec)
             ev.accept()
             return
@@ -113,7 +114,7 @@ class KeyLine(QWidget):
         self._edit = QLineEdit()
         self._edit.setEchoMode(QLineEdit.Password)
         self._edit.setPlaceholderText("sk-...")
-        self._btn = QPushButton("显示")
+        self._btn = QPushButton(t("widget.key.show"))
         self._btn.setCheckable(True)
         self._btn.setFixedWidth(48)
         self._btn.setObjectName("ovBtn")
@@ -127,7 +128,7 @@ class KeyLine(QWidget):
 
     def _toggle(self, on: bool):
         self._edit.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password)
-        self._btn.setText("隐藏" if on else "显示")
+        self._btn.setText(t("widget.key.hide") if on else t("widget.key.show"))
 
     def text(self) -> str:
         return self._edit.text()

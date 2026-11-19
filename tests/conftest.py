@@ -35,6 +35,9 @@ def _isolate_runtime_home(tmp_path, monkeypatch):
     monkeypatch.setenv("SC_TRANSLATOR_HOME", str(tmp_path / "isolated_home"))
     from sc_translator import exchange_log, gamecode, gamedict, glossary
 
+    from sc_translator.translate import client as _client
+
+    _client._PREFIX_CACHE.clear()
     exchange_log.reset()
     gamedict.clear()
     glossary.clear()
@@ -58,6 +61,7 @@ def _isolate_runtime_home(tmp_path, monkeypatch):
             except Exception:  # noqa: BLE001
                 pass
         app.processEvents()
+    _client._PREFIX_CACHE.clear()
     exchange_log.reset()
     gamedict.clear()
     glossary.clear()

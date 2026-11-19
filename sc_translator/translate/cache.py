@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -81,15 +82,19 @@ class TranslationCache:
             log.warning("缓存锁被占用，跳过本次落盘（不影响本次使用）")
             return False
         try:
+            # 写盘全程持锁：快照与文件替换一气呵成，杜绝并发 flush 交错。
+            # 临时文件名带 pid+线程 id，即使两个不同实例写同一路径也不共用 .tmp。
             snapshot = {k: v for k, v in self._data.items()}
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.path.with_name(
+                    f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+                )
+                tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(self.path)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                log.debug("写缓存失败: %s", exc)
+                return False
         finally:
             self._lock.release()
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self.path)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            log.debug("写缓存失败: %s", exc)
-            return False

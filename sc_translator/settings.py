@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +33,10 @@ PROVIDER_PRESETS = {
 LEGACY_PROVIDER_NAMES = {"自定义 OpenAI 兼容": "custom"}
 
 API_KEY_PLAINTEXT_FALLBACK = "_plaintext"
+
+# save() 串行化，避免并发写把设置文件写花；写入走"同目录临时文件 + os.replace"原子替换，
+# 崩溃时最多留下一个 .tmp，settings.json 本身要么是旧的完整内容、要么是新的完整内容。
+_write_lock = threading.Lock()
 
 
 @dataclass
@@ -121,10 +127,22 @@ class Settings:
 
     def save(self) -> None:
         p = settings_file()
-        try:
-            p.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("保存设置失败: %s", exc)
+        # 同目录临时文件：保证 os.replace 是同一卷内的原子替换（跨卷会退化成复制+删除，
+        # 不再原子）。用 pid+线程 id 避免并发写互相踩临时文件名。
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        with _write_lock:
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                tmp.write_text(
+                    json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                os.replace(tmp, p)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("保存设置失败: %s", exc)
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     # ---------------- API Key（DPAPI） ----------------
     def load_api_key(self) -> str:
@@ -140,20 +158,33 @@ class Settings:
             log.warning("读取 API Key 失败: %s", exc)
             return ""
 
-    def save_api_key(self, key: str) -> None:
+    def save_api_key(self, key: str) -> bool:
+        """保存 API Key。返回是否**真正落盘成功**（失败返回 False，调用方可感知）。
+
+        加密失败（DPAPI 不可用/抛错）时默认**不写明文**——过去会把密钥静默写成明文，
+        或干脆什么都没存却让调用方以为存好了。仅在非 Windows 或用户显式 opt-in
+        （``SC_TRANSLATOR_ALLOW_PLAINTEXT_KEY=1``）时才退化为带标记的明文。
+        """
         key = (key or "").strip()
         p = api_key_file()
-        try:
-            if not key:
-                p.unlink(missing_ok=True)
-                return
-            if secrets.dpapi_available():
-                p.write_bytes(secrets.protect(key.encode("utf-8")))
-            else:
-                # 非 Windows / DPAPI 不可用时的兜底（明文，带标记）
-                p.write_bytes(API_KEY_PLAINTEXT_FALLBACK.encode() + key.encode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("保存 API Key 失败: %s", exc)
+        with _write_lock:
+            try:
+                if not key:
+                    p.unlink(missing_ok=True)
+                    return True
+                if secrets.dpapi_available():
+                    p.write_bytes(secrets.protect(key.encode("utf-8")))
+                    return True
+                if secrets.plaintext_fallback_allowed():
+                    # 非 Windows / 用户显式 opt-in 的兜底（明文，带标记）
+                    p.write_bytes(API_KEY_PLAINTEXT_FALLBACK.encode() + key.encode("utf-8"))
+                    return True
+                log.error("DPAPI 不可用且未允许明文兜底，API Key 未保存；"
+                          "如需明文存储请设 SC_TRANSLATOR_ALLOW_PLAINTEXT_KEY=1")
+                return False
+            except Exception as exc:  # noqa: BLE001
+                log.warning("保存 API Key 失败: %s", exc)
+                return False
 
     # 便于给测试使用
     @staticmethod

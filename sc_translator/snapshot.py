@@ -281,6 +281,14 @@ class SnapshotService:
         if not texts:
             res.error = "没有识别到文字（区域可能不含文本，或画面被遮挡）"
             return res
+        # 当 OCR 识别出游戏聊天码 @xx 时，先将其转换为汉字再送进翻译（避免模型把字符码乱译或原样输出）
+        from . import gamecode
+
+        if gamecode.configured():
+            # 解码会就地覆盖识别现场（如 `@E8` -> `好`）；先按原文留一条调试日志，便于回查 OCR 实录。
+            # SnapLine.source 仍用解码后的文本（现有测试/UI 依赖此行为），不改对外结构。
+            log.debug("OCR 原文（解码前）：%s", texts)
+            texts = [gamecode.decode_chat(t) for t in texts]
         # 分阶段反馈：先让用户看到识别到的原文（译文还要等网络往返）
         if on_ocr is not None:
             try:

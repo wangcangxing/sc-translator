@@ -79,6 +79,10 @@ SCTranslator\
 - **Sentences are no longer split apart** (v0.4.10): wrapped chat lines are merged back into one message before
   translation; glued English (`takedisable` → `take disable`) is split first; the `[channel] Player:` prefix is never
   run through the glossary — a player named `Cpt_Andromeda` stays `Cpt_Andromeda` (not 「Cpt_仙女座」)
+- **@codes decoded before translating** (v0.4.12): when screenshot OCR sees an in-game `@xx` chat code (e.g. `[zh] @IH@E8@AP`),
+  the app first resolves it to Chinese locally (`@IH@E8@AP` → `你好吗`) and only then sends it to the translator.
+  Numeric codes are no longer broken by OCR spacing, and half codes / email addresses are never mis-decoded.
+  Requires a localization with community input-method codes installed.
 - Spicy mode toggle (normal ⇄ spicy prompt sets, user-editable)
 - Translation cache + multi-line batched requests + `Ctrl+Enter`, repeated text is never billed twice
 - **Full error logging**: startup crashes / uncaught exceptions / Qt warnings go to `data\logs\startup.log`;

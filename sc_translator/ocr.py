@@ -69,14 +69,28 @@ def normalize_text(text: str) -> str:
 
 def insert_word_spaces(text: str) -> str:
     """RapidOCR 常把整行输出为无空格的一整块，这里做轻量分词：
-    在 camelCase 边界、字母-数字边界补空格，便于翻译模型理解。"""
+    在 camelCase 边界、字母-数字边界补空格，便于翻译模型理解。
+
+    ``@码``（``@`` + 字母数字，如 ``@E8``）是游戏聊天码，必须作为整体保护：
+    否则字母-数字边界规则会把它拆成 ``@E 8``，破坏后续 decode_chat。
+    """
     if not text:
         return text
     s = text
+    # @码 先占位（\x00 不是字母/数字，不会被下面的边界规则命中），末尾再原样还原
+    codes: list[str] = []
+
+    def _stash(m: re.Match) -> str:
+        codes.append(m.group(0))
+        return f"\x00{len(codes) - 1}\x00"
+
+    s = re.sub(r"@[0-9A-Za-z]+", _stash, s)
     s = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)     # NeedalifttoMicrotech -> Needaliftto Microtech
     s = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", s)     # Area18 -> Area 18
     s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)     # 18Area -> 18 Area
     s = re.sub(r"\s+", " ", s).strip()
+    for idx, code in enumerate(codes):
+        s = s.replace(f"\x00{idx}\x00", code)
     return s
 
 

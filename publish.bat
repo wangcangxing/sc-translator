@@ -30,6 +30,34 @@ echo  发布到 GitHub：wangcangxing/sc-translator  版本 v%VER%
 echo ============================================
 echo.
 
+rem ---- push 前守门：分支必须是 main、工作区必须干净、发行材料必须齐全 ----
+rem 任一不满足就直接 goto fail，绝不把有问题的状态推上去。
+echo [0/3] 发布前校验 ...
+
+for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD') do set "BRANCH=%%b"
+if /i not "%BRANCH%"=="main" (
+  echo [错误] 当前分支是 "%BRANCH%"，不是 main，禁止发布。
+  goto :fail
+)
+
+set "DIRTY="
+for /f "delims=" %%s in ('git status --porcelain') do set "DIRTY=1"
+if defined DIRTY (
+  echo [错误] 工作区有未提交的改动，请先全部 commit 再发布。
+  git status --short
+  goto :fail
+)
+
+if not exist "%NOTES%" (
+  echo [错误] 缺少发行说明 %NOTES%，请先写好再发布。
+  goto :fail
+)
+if not exist "%ZIP%" (
+  echo [错误] 缺少发行包 %ZIP%，请先运行 build.bat 生成再发布。
+  goto :fail
+)
+echo [校验通过] 分支 main / 工作区干净 / 发行说明与 ZIP 均齐全。
+
 echo [1/3] 配置远程仓库 origin ...
 git remote get-url origin >nul 2>nul
 if errorlevel 1 (

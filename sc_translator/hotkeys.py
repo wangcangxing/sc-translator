@@ -23,6 +23,38 @@ MOD_WIN = 0x0008
 _k32 = ctypes.windll.user32 if hasattr(ctypes, "windll") else None
 
 
+def _prepare() -> None:
+    """显式声明用到的 Win32 函数签名。
+
+    GetForegroundWindow 默认 restype 是 c_int（32 位），64 位 HWND 会被截断成错误的
+    句柄；IsWindow 默认同样把 HWND 当 int 传，可能误判。显式 restype=HWND、argtypes
+    用 HWND 才能保证句柄在 64 位下不被截断。
+    """
+    if _k32 is None:
+        return
+    try:
+        _k32.GetForegroundWindow.restype = wintypes.HWND
+        _k32.GetForegroundWindow.argtypes = []
+        _k32.IsWindow.restype = wintypes.BOOL
+        _k32.IsWindow.argtypes = [wintypes.HWND]
+        _k32.RegisterHotKey.restype = wintypes.BOOL
+        _k32.RegisterHotKey.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+        _k32.UnregisterHotKey.restype = wintypes.BOOL
+        _k32.UnregisterHotKey.argtypes = [wintypes.HWND, wintypes.UINT]
+        _k32.SetForegroundWindow.restype = wintypes.BOOL
+        _k32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_prepare()
+
+
+def _hwnd(value) -> int:
+    """把 HWND restype 的返回值（int 或 None）统一成 int。"""
+    return int(value) if value else 0
+
+
 def register(hwnd: int, hotkey_id: int, modifiers: int, vk: int) -> bool:
     if _k32 is None:
         return False
@@ -36,11 +68,13 @@ def unregister(hwnd: int, hotkey_id: int) -> None:
 
 
 def foreground_window() -> int:
-    """当前前台窗口句柄（0 = 取不到 / 非 Windows）。"""
+    """当前前台窗口句柄（0 = 取不到 / 非 Windows / 非法句柄）。"""
     if _k32 is None:
         return 0
     try:
-        return int(_k32.GetForegroundWindow())
+        hwnd = _hwnd(_k32.GetForegroundWindow())
+        # 返回前校验：GetForegroundWindow 偶尔返回失效/0 句柄，交给调用方会误判
+        return hwnd if hwnd and _k32.IsWindow(wintypes.HWND(hwnd)) else 0
     except Exception:  # noqa: BLE001
         return 0
 
@@ -61,14 +95,14 @@ def restore_foreground(hwnd: int) -> bool:
         u32 = _k32
         if not u32.IsWindow(wintypes.HWND(hwnd)):
             return False
-        if int(u32.GetForegroundWindow()) == int(hwnd):
+        if _hwnd(u32.GetForegroundWindow()) == int(hwnd):
             return True
         if u32.SetForegroundWindow(wintypes.HWND(hwnd)):
             return True
         if not hasattr(ctypes, "windll"):
             return False
         cur = int(ctypes.windll.kernel32.GetCurrentThreadId())
-        fg = int(u32.GetForegroundWindow())
+        fg = _hwnd(u32.GetForegroundWindow())
         attached: list[int] = []
         for tid in (
             int(u32.GetWindowThreadProcessId(wintypes.HWND(fg), None)),

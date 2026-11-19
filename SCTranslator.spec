@@ -90,11 +90,20 @@ DATAS = [
     (os.path.join(ROOT, "assets", "sc_glossary.ini"), "assets"),
 ]
 
-# RapidOCR 的 onnx 模型/config 不是标准包数据，必须显式收集（否则运行期报缺模型）
+# RapidOCR 的 onnx 模型/config 不是标准包数据，必须显式收集（否则运行期报缺模型）。
+# 收集失败必须让构建显著失败，不能静默 pass —— 否则打出的 exe 缺模型却"构建成功"，
+# 用户要到最后按热键才发现截图翻译不可用。精简版请在上面删掉本行，而不是靠这里吞异常。
+import sys as _sys
+
 try:
     DATAS += collect_data_files("rapidocr_onnxruntime")
-except Exception:  # noqa: BLE001
-    pass
+except Exception as _exc:  # noqa: BLE001
+    print(
+        "[错误] 收集 rapidocr_onnxruntime 模型数据失败：%s；"
+        "打包出的 exe 截图翻译会缺模型，构建中止。" % _exc,
+        file=_sys.stderr,
+    )
+    raise RuntimeError("rapidocr_onnxruntime 模型数据收集失败，拒绝产出缺模型的 exe") from _exc
 
 HIDDEN = [
     "sc_translator",

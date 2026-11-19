@@ -98,6 +98,23 @@ def parse_vision_pairs(raw: str, max_lines: int = 40) -> list[tuple[str, str]]:
     return with_src if with_src else out
 
 
+#: 非目标文字：日文假名（含片假名）/韩文谚文。含这些字符的高汉字占比行
+#: 曾被误判为"已是中文"而原文透传（日文汉字/中日混排尤其常见）。
+_NON_ZH_SCRIPT_RE = re.compile(r"[\u3040-\u30ff\uac00-\ud7af]")
+
+
+def _passthrough_as_chinese(text: str, target_lang: str) -> bool:
+    """仅当目标是 zh-CN、且行内不含假名/谚文时，纯中文行才原样透传。
+
+    保留纯中文行"零 API"的性能收益，同时不再把日文/韩文当中文放行。
+    """
+    return (
+        target_lang.lower().startswith("zh-cn")
+        and not _NON_ZH_SCRIPT_RE.search(text)
+        and _cjk_ratio(text) > 0.55
+    )
+
+
 class ApiError(RuntimeError):
     def __init__(self, message: str, status: Optional[int] = None):
         super().__init__(message)
@@ -110,21 +127,25 @@ class ApiError(RuntimeError):
 # 前缀按 base 缓存在进程级、连接用共享 Session 保持长连接，这两笔开销就没了。
 _PREFIX_CACHE: dict[str, str] = {}
 _PREFIX_LOCK = threading.Lock()
-_SESSION: Optional[requests.Session] = None
-_SESSION_LOCK = threading.Lock()
+_SESSION_LOCAL = threading.local()
+#: 网关拒绝 thinking 参数是"服务端事实"，与具体客户端实例无关。提升为进程级、
+#: 按 (api_base, model) 记录：app.make_client 每次新建客户端不再重吃一次 400 重试。
+_NO_THINKING: dict[tuple[str, str], bool] = {}
+_NO_THINKING_LOCK = threading.Lock()
 
 
 def shared_session() -> requests.Session:
-    """进程级共享 Session：保持 TCP/TLS 长连接，省掉每次热键的握手。
+    """按线程共享 Session：保持 TCP/TLS 长连接，省掉每次热键的握手。
 
-    说明：会话可能被截图翻译线程与回话线程共用。这里不用 cookie，连接池
-    本身是线程安全的，与"客户端长期存活"的既有行为一致。
+    requests.Session 非线程安全（可变 headers/cookies/状态），截图翻译线程与
+    回话线程若共用一个实例会互相污染。改为 thread-local：同一线程内新建客户端
+    仍复用同一连接（保留原来的握手收益），跨线程则各用各的 Session。
     """
-    global _SESSION
-    with _SESSION_LOCK:
-        if _SESSION is None:
-            _SESSION = requests.Session()
-        return _SESSION
+    session = getattr(_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _SESSION_LOCAL.session = session
+    return session
 
 
 @dataclass
@@ -145,12 +166,30 @@ class OpenAiCompatClient:
     def __init__(self, opts: Optional[ClientOptions] = None, cache: Optional[TranslationCache] = None,
                  session: Optional[requests.Session] = None) -> None:
         self.opts = opts or ClientOptions()
-        self._no_thinking = False      # 网关拒绝 thinking 参数后置位，之后不再发送
         self.cache = cache
         self._session = session or shared_session()
         self._prefix_lock = threading.Lock()
         self._prefix: Optional[str] = None  # 实际可用前缀，如 .../v1
         self._log = logging.getLogger(__name__ + ".OpenAiCompatClient")
+
+    @property
+    def _thinking_key(self) -> tuple[str, str]:
+        """进程级 thinking 状态的作用域：同一 base + 同一模型共用一次探测结果。"""
+        return ((self.opts.api_base or "").strip().rstrip("/"), self.opts.model or DEFAULT_MODEL)
+
+    @property
+    def _no_thinking(self) -> bool:
+        """网关是否拒绝 thinking 参数（进程级，见模块注释）。实例属性语义不变。"""
+        with _NO_THINKING_LOCK:
+            return _NO_THINKING.get(self._thinking_key, False)
+
+    @_no_thinking.setter
+    def _no_thinking(self, value: bool) -> None:
+        with _NO_THINKING_LOCK:
+            if value:
+                _NO_THINKING[self._thinking_key] = True
+            else:
+                _NO_THINKING.pop(self._thinking_key, None)
 
     # ---------- 传输 ----------
     def _headers(self) -> dict:
@@ -355,10 +394,13 @@ class OpenAiCompatClient:
             base += prompt_files.fill(_CHAT_KEEP_TMPL, target=target)
         return base
 
-    def _cache_model(self) -> str:
+    def _cache_model(self, target_lang: str = "zh-CN") -> str:
         parts = [self.opts.model or DEFAULT_MODEL]
         if self.opts.spicy:
             parts.append("#spicy")
+        # 目标语言必须进缓存键：同一原文翻成不同目标语言会串味。
+        # 加在末尾做后缀，旧缓存文件自然不命中（可接受），无需迁移。
+        parts.append("#" + (target_lang or "zh-CN"))
         return "".join(parts)
 
     def translate_line(self, text: str, source_lang: str = "auto", target_lang: str = "zh-CN",
@@ -371,11 +413,11 @@ class OpenAiCompatClient:
         if target_lang.lower().startswith("zh") and glossary.configured():
             text = glossary.apply_chat(text) if keep_chat_prefix else glossary.apply(text)
         # 已经是目标中文的内容直接原样返回，不浪费 API
-        if target_lang.lower().startswith("zh") and _cjk_ratio(text) > 0.55:
+        if _passthrough_as_chinese(text, target_lang):
             return text
         model = self.opts.model or DEFAULT_MODEL
         style = "spicy" if self.opts.spicy else "normal"
-        cache_model = self._cache_model() + ("#chat" if keep_chat_prefix else "")
+        cache_model = self._cache_model(target_lang) + ("#chat" if keep_chat_prefix else "")
         # 词典优先：静态 UI 词条直接命中，零 API
         if not self.opts.spicy and target_lang.lower().startswith("zh"):
             from .. import gamedict
@@ -419,7 +461,7 @@ class OpenAiCompatClient:
         texts = [(t or "").strip() for t in texts]
         results: list[str] = []
         target = "简体中文" if target_lang.lower().startswith("zh") else target_lang
-        cache_model = self._cache_model() + ("#chat" if keep_chat_prefix else "")
+        cache_model = self._cache_model(target_lang) + ("#chat" if keep_chat_prefix else "")
         style = "spicy" if self.opts.spicy else "normal"
         # 术语表预替换（SC 专名先中文化再送译）；聊天行只换正文，保住玩家名前缀
         if target_lang.lower().startswith("zh") and glossary.configured():
@@ -432,7 +474,7 @@ class OpenAiCompatClient:
         for i, t in enumerate(texts):
             if not t:
                 results.append("")
-            elif target_lang.lower().startswith("zh") and _cjk_ratio(t) > 0.55:
+            elif _passthrough_as_chinese(t, target_lang):
                 results.append(t)
             elif not self.opts.spicy and target_lang.lower().startswith("zh"):
                 from .. import gamedict
@@ -480,18 +522,35 @@ class OpenAiCompatClient:
             raise
 
         parsed: dict[int, str] = {}
-        import re
-
         for ln in raw.splitlines():
             m = re.match(r"^\s*(\d+)\s*[.、:：]\s*(.+)$", ln.strip())
             if m:
                 parsed[int(m.group(1))] = m.group(2).strip().strip('"').strip("“”‘’")
+        # 校验：模型必须不多不少、按 1..N 各答一次。漏答/重排号/重复号会让
+        # parsed.get(idx) 静默对错行，所以只要编号集合不等于 1..N 就整批作废、
+        # 回退逐条 translate_line（逐条路径本身带缓存，代价可控）。
+        n_todo = len(todo_idx)
+        expected_nums = set(range(1, n_todo + 1))
+        if set(parsed) != expected_nums or len(parsed) != n_todo:
+            log.warning("批译编号不完整/重排（期望 1..%d，实得 %s），整批回退逐条翻译",
+                        n_todo, sorted(parsed))
+            parsed = {}
+
+        def _fallback_line(i: int) -> str:
+            """逐条兜底：单条网络失败不影响其它已成功行，失败行保留原文。"""
+            try:
+                return self.translate_line(texts[i], source_lang=source_lang, target_lang=target_lang,
+                                           keep_chat_prefix=keep_chat_prefix)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("批译逐条兜底失败，保留原文：%s", exc)
+                exchange_log.record("realtime", model, texts[i], error=str(exc), style=style)
+                return texts[i]
+
         # 回填；缺的行逐条兜底（走单行翻译，含缓存），保证长度一致
         for idx, i in enumerate(todo_idx, start=1):
             out = parsed.get(idx)
             if out is None:
-                out = self.translate_line(texts[i], source_lang=source_lang, target_lang=target_lang,
-                                          keep_chat_prefix=keep_chat_prefix)
+                out = _fallback_line(i)
             if target_lang.lower().startswith("zh") and glossary.configured():
                 out = glossary.apply_chat(out) if keep_chat_prefix else glossary.apply(out)
             results[i] = out

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import os
 import sys
+import tempfile
 import traceback
 
 
@@ -59,16 +60,39 @@ class _Tee:
                 pass
 
 
-def _setup_crash_logging():
-    logs = _logs_dir()
-    data = _data_dir()
-    try:
-        os.makedirs(logs, exist_ok=True)
-        os.makedirs(data, exist_ok=True)
-    except Exception:
+class _NullStream:
+    """所有日志路径都不可写时的空文件替身：保证调用方拿到可用对象、不抛异常。"""
+
+    def write(self, s: str) -> None:
         pass
-    path = os.path.join(logs, "startup.log")
-    fh = open(path, "a", encoding="utf-8", errors="replace")
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _open_startup_log():
+    """打开 startup.log；数据目录不可写时回退系统临时目录，再不行返回空流。"""
+    candidates = [os.path.join(_logs_dir(), "startup.log")]
+    try:
+        candidates.append(
+            os.path.join(tempfile.gettempdir(), "SCTranslator-logs", "startup.log")
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    for path in candidates:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            return open(path, "a", encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+    return _NullStream()
+
+
+def _setup_crash_logging():
+    fh = _open_startup_log()
     fh.write("\n" + "=" * 60 + f"\n[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] 启动\n")
     fh.flush()
 
@@ -132,8 +156,19 @@ def _doctor(online: bool) -> int:
     step("数据目录", lambda: str(_data_dir()))
 
     def _settings():
+        import json
+
+        from .paths import settings_file
         from .settings import Settings
 
+        # 直接读原始 JSON：Settings().load() 会吞掉解析异常整体回退默认值，
+        # 损坏的 settings.json 若只走 load() 会被误报 PASS。这里解析失败即 FAIL。
+        p = settings_file()
+        if p.exists():
+            raw = p.read_text(encoding="utf-8")
+            parsed = json.loads(raw)       # 解析失败 -> 异常 -> step 记 FAIL
+            if not isinstance(parsed, dict):
+                raise ValueError(f"settings.json 顶层应为对象，实为 {type(parsed).__name__}")
         s = Settings().load()
         key = s.load_api_key()
         return f"provider={s.api_provider} model={s.model} base={s.api_base} key={'已配置' if key else '未配置'} 嘴臭={s.spicy_mode}"
@@ -339,37 +374,51 @@ def main() -> int:
         if arg.startswith("--home="):
             os.environ["SC_TRANSLATOR_HOME"] = arg.split("=", 1)[1]
             break
-    # 迁移旧 %APPDATA% 数据到本地 data/（须在写任何本地日志之前执行）
-    try:
-        from .paths import migrate_legacy_data
 
-        migrate_legacy_data()
-    except Exception:  # noqa: BLE001
-        pass
-    # 界面语言：尽早生效，保证启动期对话框也是用户选择的语言
-    try:
-        from .settings import Settings as _Settings
-        from .i18n import set_language as _set_language
-
-        _set_language(_Settings().load().ui_language)
-    except Exception:  # noqa: BLE001
-        pass
-    # 首次运行自举：释放随包提示词 / 术语表到程序目录（已存在则不动）
-    try:
-        from . import bootstrap
-
-        bootstrap.run()
-    except Exception:  # noqa: BLE001
-        pass
-    fh = _setup_crash_logging()
-    try:
-        if "--doctor" in sys.argv:
+    # --doctor 走最小只读路径：必须在迁移 / 自举 / 崩溃日志追加**之前**判断，
+    # 自检本身不该产生启动副作用（写迁移标记、释放提示词/术语表、追加 startup.log）。
+    if "--doctor" in sys.argv:
+        try:
             return _doctor(online="--online" in sys.argv)
+        except SystemExit as exc:  # 正常 sys.exit
+            return int(exc.code) if exc.code is not None else 0
+        except BaseException:  # 兜底：不让自检把异常抛给调用者
+            return 1
+
+    fh = None
+    try:
+        # 崩溃日志初始化纳入 try：不可写时回退临时目录 / 空流，保证始终返回有效对象
+        fh = _setup_crash_logging()
+        # 迁移旧 %APPDATA% 数据到本地 data/（须在写任何本地日志之前执行）
+        try:
+            from .paths import migrate_legacy_data
+
+            migrate_legacy_data()
+        except Exception:  # noqa: BLE001
+            pass
+        # 界面语言：尽早生效，保证启动期对话框也是用户选择的语言
+        try:
+            from .settings import Settings as _Settings
+            from .i18n import set_language as _set_language
+
+            _set_language(_Settings().load().ui_language)
+        except Exception:  # noqa: BLE001
+            pass
+        # 首次运行自举：释放随包提示词 / 术语表到程序目录（已存在则不动）
+        try:
+            from . import bootstrap
+
+            bootstrap.run()
+        except Exception:  # noqa: BLE001
+            pass
         return _run()
     except SystemExit as exc:  # 正常 sys.exit
         return int(exc.code) if exc.code is not None else 0
     except BaseException:  # 未捕获异常：写日志并给出可见提示
-        sys.excepthook(*sys.exc_info())
+        if fh is not None:
+            sys.excepthook(*sys.exc_info())
+        else:
+            traceback.print_exc()
         try:
             from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -385,11 +434,12 @@ def main() -> int:
             pass
         return 1
     finally:
-        try:
-            fh.flush()
-            fh.close()
-        except Exception:
-            pass
+        if fh is not None:
+            try:
+                fh.flush()
+                fh.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

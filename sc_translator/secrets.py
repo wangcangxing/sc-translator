@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 LOCAL_MACHINE = 0x4  # 不用；保持用户级
@@ -43,13 +44,59 @@ def dpapi_available() -> bool:
         return False
 
 
-def protect(data: bytes) -> bytes:
-    """加密 bytes -> bytes（进程外可持久化）。"""
+def plaintext_fallback_allowed() -> bool:
+    """是否允许把 API Key 明文落盘。
+
+    默认**禁止**：过去只要 `dpapi_available()` 为假就写明文，Windows 上 crypt32
+    偶发取不到时会静默把密钥写成明文。只有满足其一才放行：
+    - 非 Windows 平台（本来就没有 DPAPI，明文是唯一可用方案）；
+    - 显式设置环境变量 ``SC_TRANSLATOR_ALLOW_PLAINTEXT_KEY=1``（用户主动 opt-in）。
+    """
+    if os.name != "nt":
+        return True
+    return os.environ.get("SC_TRANSLATOR_ALLOW_PLAINTEXT_KEY", "") == "1"
+
+
+# 显式声明 DPAPI 函数签名：use_last_error=True 让 ctypes 在调用前清零 last-error、
+# 调用后自行保存，这样 get_last_error() 取到的才是**本次**调用的错误码
+# （直接 windll 调用取到的是上一次其它 Win32 调用遗留的值）。参考 cpu_pin.py:46-52。
+_DPAPI_PROTO = None
+_CRYPT32 = None
+
+
+def _prepare() -> bool:
+    """惰性准备带签名的 CryptProtectData / CryptUnprotectData。"""
+    global _DPAPI_PROTO, _CRYPT32
     if not dpapi_available():
+        return False
+    try:
+        crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
+        proto = ctypes.WINFUNCTYPE(
+            wt.BOOL,
+            ctypes.POINTER(DATA_BLOB),   # pDataIn
+            ctypes.c_wchar_p,            # szDataDescr
+            ctypes.c_void_p,             # pOptionalEntropy
+            ctypes.c_void_p,             # pvReserved
+            ctypes.c_void_p,             # pPromptStruct
+            wt.DWORD,                    # dwFlags
+            ctypes.POINTER(DATA_BLOB),   # pDataOut
+            use_last_error=True,
+        )
+        _DPAPI_PROTO = proto
+        _CRYPT32 = crypt32
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def protect(data: bytes) -> bytes:
+    """加密 bytes -> bytes（进程外可持久化）。失败向上抛，绝不明文落盘。"""
+    if not _prepare():
         raise RuntimeError("Windows DPAPI 不可用")
     pin = _make_blob(data)  # 输入引用 Python 内存，绝不能 LocalFree
     pout = DATA_BLOB()
-    ok = ctypes.windll.crypt32.CryptProtectData(  # type: ignore[attr-defined]
+    fn = _DPAPI_PROTO(("CryptProtectData", _CRYPT32))
+    ok = fn(
         ctypes.byref(pin),
         ctypes.c_wchar_p("SCTranslator api key"),
         None, None, None,
@@ -65,11 +112,12 @@ def protect(data: bytes) -> bytes:
 
 
 def unprotect(data: bytes) -> bytes:
-    if not dpapi_available():
+    if not _prepare():
         raise RuntimeError("Windows DPAPI 不可用")
     pin = _make_blob(data)
     pout = DATA_BLOB()
-    ok = ctypes.windll.crypt32.CryptUnprotectData(  # type: ignore[attr-defined]
+    fn = _DPAPI_PROTO(("CryptUnprotectData", _CRYPT32))
+    ok = fn(
         ctypes.byref(pin),
         None, None, None, None,
         CRYPTPROTECT_UI_FORBIDDEN,

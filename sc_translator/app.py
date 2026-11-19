@@ -49,6 +49,11 @@ class AppController:
         self._hub.result.connect(self._dispatch_result)
         self._cache: Optional[TranslationCache] = None
         self._threads: list[threading.Thread] = []
+        # 切界面语言会重建主窗口；旧主窗口 deleteLater 后，在途后台回调若落到已销毁的
+        # Qt 对象上会被吞掉。用轻量 epoch + shutting_down 标记：重建/退出时 epoch 自增，
+        # 旧 epoch 的回调在主线程直接丢弃（不碰 UI 对象）。
+        self._epoch = 0
+        self.shutting_down = False
 
         # 译文悬浮框（常驻置顶）：这里只置空，实际对象在 init_ui() 里创建
         self.overlay = None
@@ -66,7 +71,14 @@ class AppController:
         self.apply_dict()
 
     def _dispatch_result(self, payload: object) -> None:
-        cb, ok, value = payload  # type: ignore[misc]
+        # 兼容旧的 3 元组与带 epoch 的 4 元组
+        if len(payload) == 4:  # type: ignore[arg-type]
+            cb, ok, value, epoch = payload  # type: ignore[misc]
+            if self.shutting_down or epoch != self._epoch:
+                log.debug("丢弃过期后台回调（epoch %s，当前 %s）", epoch, self._epoch)
+                return
+        else:
+            cb, ok, value = payload  # type: ignore[misc]
         try:
             cb(ok, value)
         except Exception:  # noqa: BLE001
@@ -149,6 +161,9 @@ class AppController:
         code = i18n.set_language(code)
         self.settings.ui_language = code
         self.settings.save()
+        # 旧窗口即将 deleteLater：先自增 epoch，令在途后台回调落成到主线程后被丢弃，
+        # 不再摸已销毁的 Qt 对象。新窗口/新线程使用新 epoch。
+        self._epoch += 1
         old = self.mainwin
         geo = old.geometry() if old is not None else None
         self.init_ui()
@@ -184,12 +199,15 @@ class AppController:
     def run_in_thread(self, fn: Callable[[], object], cb: Callable[[bool, object], None]) -> None:
         """后台线程执行 fn，完成后在主线程调 cb(ok, value_or_exc)。"""
 
+        epoch = self._epoch
+
         def runner():
             try:
                 ok, value = True, fn()
             except Exception as exc:  # noqa: BLE001
                 ok, value = False, exc
-            self._hub.result.emit((cb, ok, value))  # 跨线程 emit -> 排队回主线程
+            # 跨线程 emit -> 排队回主线程；携带 epoch，重建/退出后旧回调会被丢弃
+            self._hub.result.emit((cb, ok, value, epoch))
 
         t = threading.Thread(target=runner, daemon=True)
         self._threads.append(t)
@@ -201,7 +219,7 @@ class AppController:
         用途：分阶段结果——OCR 一完成就先把原文显示出来，译文回来再原地替换，
         这样"按了热键半天没反应"就变成了"立刻有反馈"。
         """
-        self._hub.result.emit((lambda _ok, _val: fn(), True, None))
+        self._hub.result.emit((lambda _ok, _val: fn(), True, None, self._epoch))
 
     def translate_reply_async(self, text: str, target: str, done: Callable[[bool, object], None]) -> None:
         """浮窗回话：后台翻译一条中文，完成后在主线程回调 ``done(ok, result)``。
@@ -314,6 +332,7 @@ class AppController:
         - 逐键记录结果到 ``self.hotkey_ok``（{"capture": bool, "select": bool}），
           这样"只成功一个"也能如实显示，而不是笼统说"已更新"。
         """
+        old_ok = dict(self.hotkey_ok)
         self.hotkey_ok = {"capture": False, "select": False}
         if not self.settings.snap_enabled:
             return 0
@@ -322,14 +341,25 @@ class AppController:
         from .hotkeys import HotkeyService
         from .snapshot import parse_hotkey
 
+        # 先取新 hwnd 并确认可用，再注销旧服务：原实现"先 remove 再取 winId"，
+        # 若窗口正在销毁导致 winId() 抛 RuntimeError，旧热键已注销、新热键没注册，
+        # 且没有任何重试。这里失败时**保留旧注册**直接返回。
+        try:
+            new_hwnd = int(self.mainwin.winId())
+        except RuntimeError as exc:
+            # 窗口正在销毁（关窗时焦点变化会走到这里），保留旧注册，静默跳过；
+            # 恢复旧的 hotkey_ok，让界面状态与"旧热键仍在生效"保持一致。
+            log.debug("窗口不可用，跳过热键重装（保留旧注册）: %s", exc)
+            self.hotkey_ok = old_ok
+            return sum(1 for v in old_ok.values() if v)
         self.remove_hotkeys()
         try:
-            svc = HotkeyService(int(self.mainwin.winId()))
+            svc = HotkeyService(new_hwnd)
             svc.install()
         except RuntimeError as exc:
-            # 窗口正在销毁（关窗时焦点变化会走到这里），静默跳过
-            log.debug("窗口不可用，跳过热键注册: %s", exc)
-            return 0
+            log.debug("热键服务安装失败（窗口不可用）: %s", exc)
+            self.hotkey_ok = old_ok
+            return sum(1 for v in old_ok.values() if v)
         spec = parse_hotkey(self.settings.snap_hotkey)
         if spec:
             self.hotkey_ok["capture"] = svc.add(0x5101, spec[0], spec[1], self.mainwin.on_snap_hotkey)
@@ -408,6 +438,9 @@ class AppController:
 
     # ------------------------------------------------------- 关闭
     def shutdown(self) -> None:
+        # 标记退出并自增 epoch：所有在途后台回调到主线程后一律丢弃
+        self.shutting_down = True
+        self._epoch += 1
         # 只清理已经建过的对象：退出路径不为了"关一下"再新建缓存/读盘
         if self._cache is not None:
             try:

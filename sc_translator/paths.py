@@ -48,31 +48,44 @@ def home_dir() -> Path:
     return p
 
 
+# 迁移完成标记：存在即表示"已经处理过一次旧数据迁移"，之后即使新目录被用户清空也
+# 不再把旧 %APPDATA% 数据拷回来（用户删掉新目录设置就是想重置，不该被迁移复活）。
+_MIGRATED_MARKER = ".migrated"
+
+
+def _migrated_marker(new: Path) -> Path:
+    return new / _MIGRATED_MARKER
+
+
 def migrate_legacy_data() -> None:
     """一次性迁移旧的 %APPDATA%\\SCTranslator 数据到新的程序目录 data\\。
 
-    仅在新位置尚不存在 settings.json 时执行；已存在则跳过（不覆盖）。
+    以 ``data\\.migrated`` 标记判定是否已迁移过（迁移完成后写入）；标记存在就不再
+    执行。这样新目录里 settings.json 被用户主动删除（想恢复默认）时，不会被旧目录
+    的设置重新拷回。
     """
     try:
         new = home_dir()
-        if (new / "settings.json").exists():
+        marker = _migrated_marker(new)
+        if marker.exists():
             return
         old = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
-        if not old.exists():
-            return
-        copied = 0
-        for name in ("settings.json", "api_key.bin", "cache.json", "glossary.json"):
-            src = old / name
-            if src.exists() and not (new / name).exists():
-                shutil.copy2(src, new / name)
-                copied += 1
-        for sub in ("logs", "templates"):
-            src = old / sub
-            if src.exists() and src.is_dir() and not (new / sub).exists():
-                shutil.copytree(src, new / sub)
-                copied += 1
-        if copied:
-            log.info("已从 %s 迁移运行时数据到 %s（%d 项）", old, new, copied)
+        if old.exists():
+            copied = 0
+            for name in ("settings.json", "api_key.bin", "cache.json", "glossary.json"):
+                src = old / name
+                if src.exists() and not (new / name).exists():
+                    shutil.copy2(src, new / name)
+                    copied += 1
+            for sub in ("logs", "templates"):
+                src = old / sub
+                if src.exists() and src.is_dir() and not (new / sub).exists():
+                    shutil.copytree(src, new / sub)
+                    copied += 1
+            if copied:
+                log.info("已从 %s 迁移运行时数据到 %s（%d 项）", old, new, copied)
+        # 无论旧目录是否存在/是否拷到东西，都写标记——迁移这件事只做一次
+        marker.write_text("migrated\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         log.warning("旧数据迁移失败（可忽略）: %s", exc)
 

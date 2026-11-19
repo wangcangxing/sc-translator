@@ -866,6 +866,8 @@ class MainWindow(QMainWindow):
         self._set_status(t("snap.working"))
 
         def done(res) -> None:
+            if getattr(self, "_shutting_down", False):
+                return
             self._snap_busy = False
             self._btn_snap_now.setEnabled(True)
             self._show_snap_result(res)
@@ -1010,7 +1012,7 @@ class MainWindow(QMainWindow):
                 ox, oy = lay.phys_origin
                 pw, ph = lay.phys_size
                 if ox <= phys["left"] < ox + pw and oy <= phys["top"] < oy + ph:
-                    label = f"屏幕{lay.info.index + 1}"
+                    label = t("snap.screen", n=lay.info.index + 1)
                     break
             self.app.settings.snap_region = {
                 "logical": {"x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3]},
@@ -1127,7 +1129,9 @@ class MainWindow(QMainWindow):
         code = self._lang.currentData()
         if not code or code == i18n.current():
             return
-        if self._busy or self._gc_busy:
+        # 截图翻译在途、或框选窗口还没关时也要拒绝：这些回调都捕获了当前控件的引用，
+        # 重建窗口后会打到已销毁的旧控件（与主窗口翻译/编码在途同理）。
+        if self._busy or self._gc_busy or self._snap_busy or getattr(self, "_picker", None) is not None:
             self._set_status(t("status.lang_busy"))
             idx = self._lang.findData(i18n.current())
             if idx >= 0:
@@ -1231,6 +1235,8 @@ class MainWindow(QMainWindow):
             return client.translate_reply(zh, "English", spicy=bool(self.app.settings.spicy_mode))
 
         def done(ok, val):
+            if getattr(self, "_shutting_down", False):
+                return
             self._gc_busy = False
             self._btn_gc_encode.setEnabled(True)
             if not ok:
@@ -1341,6 +1347,8 @@ class MainWindow(QMainWindow):
             return client.list_models()
 
         def done(ok, val):
+            if getattr(self, "_shutting_down", False):
+                return
             self._btn_models.setEnabled(True)
             self._btn_models.setText(t("btn.models"))
             if not ok:
@@ -1370,6 +1378,8 @@ class MainWindow(QMainWindow):
             return client.translate_line("Hello, this is a translation test.", "en", "zh-CN")
 
         def done(ok, val):
+            if getattr(self, "_shutting_down", False):
+                return
             self._btn_test.setEnabled(True)
             self._btn_test.setText(t("btn.test"))
             if ok:
@@ -1418,15 +1428,21 @@ class MainWindow(QMainWindow):
                 self.app.settings.save()
                 self.app.apply_glossary()
                 self._refresh_glossary_state()
-                QMessageBox.information(self, t("gl.made"), f"{target}\n\n每行 英文词条 = 中文译名")
+                QMessageBox.information(self, t("gl.made"), f"{target}\n\n{t('gl.sample_body')}")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, t("gl.make_fail"), str(exc))
 
     # ---------------- 动作 ----------------
     def _on_spicy_toggled(self, _on: bool) -> None:
-        self.app.settings.spicy_mode = self._spicy.isChecked()
+        on = self._spicy.isChecked()
+        self.app.settings.spicy_mode = on
         self.app.settings.save()
-        self._set_status(t("status.spicy_on") if self._spicy.isChecked() else t("status.spicy_off"))
+        # 同步浮窗上的嘴臭按钮：此前只写设置+状态栏，浮窗按钮样式/文案停留在旧状态。
+        # notify_main=False 避免浮窗再回调回本方法形成来回刷新。
+        ov = getattr(self.app, "overlay", None)
+        if ov is not None:
+            ov.set_spicy_mode(on, notify_main=False)
+        self._set_status(t("status.spicy_on") if on else t("status.spicy_off"))
 
     def _paste_in(self) -> None:
         from PySide6.QtWidgets import QApplication
@@ -1456,7 +1472,7 @@ class MainWindow(QMainWindow):
             outs = client.translate_lines_batch(lines, source_lang="auto", target_lang="zh-CN")
             return "\n".join(outs)
 
-        self._run_async(work, "翻译中…")
+        self._run_async(work, t("status.translating"))
 
     def _translate_reply(self) -> None:
         if self._busy:
@@ -1501,7 +1517,7 @@ class MainWindow(QMainWindow):
             if note:
                 self._set_status(note)
 
-        self._run_async(work, "翻译中…", extra=post)
+        self._run_async(work, t("status.translating"), extra=post)
 
     # ---------------- 输出组合（中文码 / 译文）----------------
     def _on_reply_out_toggled(self, which: str) -> None:
@@ -1520,12 +1536,12 @@ class MainWindow(QMainWindow):
         s.reply_out_foreign = self._reply_out_foreign.isChecked()
         s.save()
         if reverted:
-            self._set_status("至少保留一项输出：中文码 或 译文")
+            self._set_status(t("reply.out.keep_one"))
             return
         code, foreign = self._reply_out_code.isChecked(), self._reply_out_foreign.isChecked()
         self._set_status(
-            "回话输出：中文码 + 译文" if code and foreign
-            else ("回话输出：只中文码" if code else "回话输出：只译文")
+            t("reply.out.both") if code and foreign
+            else (t("reply.out.code_only") if code else t("reply.out.foreign_only"))
         )
 
     def _reply_code_line(self, zh_text: str) -> tuple[str, str]:
@@ -1533,10 +1549,10 @@ class MainWindow(QMainWindow):
         from .. import gamecode
 
         if not gamecode.configured():
-            return "", "⚠ 未找到汉化码表，无法生成中文码"
+            return "", t("gc.table_missing")
         line = gamecode.encode(zh_text)
         if not line:
-            return "", "⚠ 没有可编码的中文"
+            return "", t("gc.no_encodable")
         return line, ""
 
     def _compose_reply(self, zh_text: str, target: str, translation: str) -> tuple[str, str]:
@@ -1551,7 +1567,7 @@ class MainWindow(QMainWindow):
             return translation, ""
         code_line, note = self._reply_code_line(zh_text)
         if not code_line:
-            return translation, note + "（本次只输出译文）"
+            return translation, note + t("gc.translate_only_note")
         return compose_reply_lines(code_line, translation, target), ""
 
     def _run_async(self, work, status: str, extra=None) -> None:
@@ -1559,13 +1575,15 @@ class MainWindow(QMainWindow):
         self._set_status(status)
 
         def done(ok, val):
+            if getattr(self, "_shutting_down", False):
+                return
             self._busy = False
             if extra is not None:
                 extra(ok, val)
                 return
             if ok:
                 self._result_en.setPlainText(val)
-                self._set_status("完成")
+                self._set_status(t("status.done"))
             else:
                 self._show_fail(val)
 

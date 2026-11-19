@@ -17,18 +17,47 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# 写方（load/clear/ensure_defaults）构造全新的 dict + pattern 后在锁内一次性整体
+# 替换；读方（apply）在锁内抓取一致的 (terms, pattern) 快照再出锁匹配。
+# 这样 UI 改表与工作线程 apply 并发时，绝不会拿到"旧 pattern + 新 terms"的半更新态。
+_LOCK = threading.RLock()
 _terms: dict[str, str] = {}
 _pattern: Optional[re.Pattern] = None
 _loaded_path: Optional[str] = None
 _pattern_dirty = False
 
+#: 词边界：挡住 ASCII 字母/数字/下划线（Pyro2、Cpt_Pyro 不再误命中），
+#: 但**不**含中文——实测 `去Pyro星系` 仍能替换（`\w` 含中文会挡掉，故不用 `\w`）。
+_WORD_BOUND = r"(?<![A-Za-z0-9_])({p})(?![A-Za-z0-9_])"
+
 
 def configured() -> bool:
-    return bool(_terms)
+    with _LOCK:
+        return bool(_terms)
+
+
+def _compile_locked(terms: dict[str, str]) -> Optional[re.Pattern]:
+    """在持锁状态下由给定 terms 构造一个全新的 pattern 对象。"""
+    if not terms:
+        return None
+    keys = sorted(terms, key=lambda k: (len(k), k), reverse=True)  # 长词/多词优先
+    parts = "|".join(re.escape(k) for k in keys)
+    return re.compile(_WORD_BOUND.format(p=parts), re.IGNORECASE)
+
+
+def _snapshot() -> tuple[dict[str, str], Optional[re.Pattern]]:
+    """返回一致的 (terms, pattern) 快照；必要时惰性编译（推迟到首次 apply）。"""
+    global _pattern, _pattern_dirty
+    with _LOCK:
+        if _pattern_dirty or (_pattern is None and _terms):
+            _pattern = _compile_locked(_terms)   # 新 pattern 整体替换
+            _pattern_dirty = False
+        return _terms, _pattern
 
 
 def load(path: str, max_entries: int = 20000) -> int:
@@ -38,76 +67,72 @@ def load(path: str, max_entries: int = 20000) -> int:
     放启动路径会拖慢窗口出现；放首次翻译时几乎无感）。
     """
     global _terms, _pattern, _loaded_path, _pattern_dirty
-    _terms = {}
-    _pattern = None
-    _loaded_path = None
-    _pattern_dirty = False
-    if not path or not os.path.exists(path):
-        return 0
+    new_terms: dict[str, str] = {}
+    new_path: Optional[str] = None
     count = 0
-    try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
-            for raw in fh:
-                if count >= max_entries:
-                    log.warning("术语表条目超过上限 %d，多余部分被忽略", max_entries)
-                    break
-                line = raw.strip()
-                if not line or line.startswith(("#", ";", "//")) or "=" not in line:
-                    continue
-                en, zh = line.split("=", 1)
-                en = en.strip()
-                zh = zh.strip()
-                if len(en) >= 2 and zh:
-                    _terms[en.lower()] = zh
-                    count += 1
-    except Exception as exc:  # noqa: BLE001
-        log.warning("术语表加载失败 %s: %s", path, exc)
-        return 0
-    _loaded_path = path
-    _pattern_dirty = True
-    log.info("SC 术语表已加载：%d 词条 (%s)", count, path)
+    if path and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
+                for raw in fh:
+                    if count >= max_entries:
+                        log.warning("术语表条目超过上限 %d，多余部分被忽略", max_entries)
+                        break
+                    line = raw.strip()
+                    if not line or line.startswith(("#", ";", "//")) or "=" not in line:
+                        continue
+                    en, zh = line.split("=", 1)
+                    en = en.strip()
+                    zh = zh.strip()
+                    if len(en) >= 2 and zh:
+                        new_terms[en.lower()] = zh
+                        count += 1
+            new_path = path
+        except Exception as exc:  # noqa: BLE001
+            log.warning("术语表加载失败 %s: %s", path, exc)
+            with _LOCK:
+                _terms, _pattern = {}, None
+                _loaded_path, _pattern_dirty = None, False
+            return 0
+    # 一次性整体替换：读者要么见旧态、要么见新态，不存在半更新。
+    with _LOCK:
+        _terms, _pattern = new_terms, None
+        _loaded_path, _pattern_dirty = new_path, bool(new_terms)
+    if new_path:
+        log.info("SC 术语表已加载：%d 词条 (%s)", count, new_path)
     return count
 
 
 def _ensure_pattern() -> None:
-    global _pattern_dirty
-    if _pattern_dirty or (_pattern is None and _terms):
-        _compile()
-        _pattern_dirty = False
+    _snapshot()
 
 
 def _compile() -> None:
+    """兼容旧调用：按当前 terms 重新编译（整体替换）。"""
     global _pattern
-    if not _terms:
-        _pattern = None
-        return
-    keys = sorted(_terms, key=lambda k: (len(k), k), reverse=True)  # 长词/多词优先
-    parts = "|".join(re.escape(k) for k in keys)
-    _pattern = re.compile(rf"(?<![A-Za-z])({parts})(?![A-Za-z])", re.IGNORECASE)
+    with _LOCK:
+        _pattern = _compile_locked(_terms)
 
 
 def clear() -> None:
     global _terms, _pattern, _loaded_path, _pattern_dirty
-    _terms = {}
-    _pattern = None
-    _loaded_path = None
-    _pattern_dirty = False
+    with _LOCK:
+        _terms, _pattern = {}, None
+        _loaded_path, _pattern_dirty = None, False
 
 
 def apply(text: str) -> str:
     """把已知词条替换为中文（词边界匹配）。未配置/无命中原样返回。"""
-    if not text or not _terms:
+    if not text:
         return text
-    _ensure_pattern()
-    if _pattern is None:
+    terms, pattern = _snapshot()   # 一致的快照，锁外匹配
+    if not terms or pattern is None:
         return text
 
     def _rep(m: "re.Match[str]") -> str:
-        key = m.group(1).lower()
-        return _terms.get(key, m.group(1))
+        return terms.get(m.group(1).lower(), m.group(1))
 
     try:
-        return _pattern.sub(_rep, text)
+        return pattern.sub(_rep, text)
     except Exception:  # noqa: BLE001
         return text
 
@@ -122,9 +147,15 @@ def apply_chat(text: str) -> str:
     from .textutil import split_chat_prefix
 
     head, body = split_chat_prefix(text)
-    if not head:
-        return apply(text)
-    return head + apply(body)
+    if head:
+        return head + apply(body)
+    # 前缀识别失败（超长/异形玩家名）时不再全文替换，只动最后一个冒号之后的正文，
+    # 否则玩家名里的专名仍被误译。无冒号时才退回全文替换。
+    poss = [p for p in (text.rfind(":"), text.rfind("：")) if p >= 0]
+    if poss:
+        pos = max(poss)
+        return text[: pos + 1] + apply(text[pos + 1 :])
+    return apply(text)
 
 
 SAMPLE = """# SC 术语表：聊天预替换用（每行 英文词条 = 规范中文译名，可多词）
@@ -158,14 +189,17 @@ DEFAULT_TERMS = {
 
 def ensure_defaults() -> None:
     """把内置默认词条并入（文件里没有才补）。"""
-    global _pattern
-    changed = False
-    for k, v in DEFAULT_TERMS.items():
-        if k.lower() not in _terms:
-            _terms[k.lower()] = v
-            changed = True
-    if changed:
-        _compile()
+    global _terms, _pattern
+    with _LOCK:
+        new_terms = dict(_terms)             # COW：先复制再改，读者不会见到半更新
+        changed = False
+        for k, v in DEFAULT_TERMS.items():
+            if k.lower() not in new_terms:
+                new_terms[k.lower()] = v
+                changed = True
+        if changed:
+            _terms = new_terms
+            _pattern = _compile_locked(new_terms)
 
 
 def write_sample(path: str) -> bool:

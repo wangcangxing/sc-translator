@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HEAVY = ("numpy", "cv2", "onnxruntime", "rapidocr_onnxruntime", "mss", "llama_cpp", "PIL")
 
 
@@ -124,6 +126,33 @@ def test_doctor_selftest_passes(tmp_path):
     assert out.returncode == 0, out.stdout + out.stderr
     for step in ("数据目录", "设置", "提示词", "术语表"):
         assert f"[PASS] {step}" in text, text
+
+
+def test_frozen_exe_doctor_passes(tmp_path):
+    """冻结产物守门：若已打包则跑真正的 exe --doctor 并断言 exit 0。
+
+    没打包的 CI 上直接跳过，避免因为"还没 build"而让整套测试失败。
+    """
+    root = Path(__file__).resolve().parent.parent
+    exe = root / "dist" / "SCTranslator" / "SCTranslator.exe"
+    if not exe.is_file():
+        pytest.skip(f"未发现冻结产物 {exe}，跳过（先运行 build.bat）")
+    home = tmp_path / "home"
+    out = subprocess.run(
+        [str(exe), "--doctor", f"--home={home}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(root),
+        timeout=120,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    report = home / "logs" / "doctor.log"
+    assert report.is_file(), "冻结产物自检报告未生成"
+    text = report.read_text(encoding="utf-8")
+    assert "[FAIL]" not in text, text
+    assert "结论：全部通过" in text, text
 
 
 def test_packaged_glossary_is_used_when_no_path_configured(qapp, tmp_home):

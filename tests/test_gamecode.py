@@ -241,5 +241,49 @@ def test_real_installed_hanhua_matches_example(ini: Path):
         assert gamecode.decode("[zh] @IH@E8@AP") == "你好吗"
         # 码表里每个码都能解回同一个字
         assert gamecode.decode(gamecode.encode("斯坦顿星系")) == "斯坦顿星系"
+        # decode_chat：真实码表下要还原聊天码，且守住 [频道] 玩家名: 前缀
+        assert gamecode.decode_chat("[全局] Player: @IH@E8@AP") == "[全局] Player: 你好吗"
+        assert gamecode.decode_chat("[全局] @Bob: @IH@E8") == "[全局] @Bob: 你好"
+        # OCR 在码之间误插空格也要正确折叠
+        assert gamecode.decode_chat("[全局] Player: @IH @E8@AP") == "[全局] Player: 你好吗"
     finally:
         gamecode.clear()
+
+
+# ------------------------------------------------------------------ decode_chat
+def test_decode_chat_replaces_codes_and_preserves_prefix(table):
+    """decode_chat 应当还原消息中的 @码 为汉字，并保留聊天消息头。"""
+    assert gamecode.decode_chat("[全局] Player1: [zh] @IH@E8@AP") == "[全局] Player1: 你好吗"
+    assert gamecode.decode_chat("[全局] Player1: @IH@E8@AP") == "[全局] Player1: 你好吗"
+    assert gamecode.decode_chat("[Team] Cpt_Andromeda: @IH@E8") == "[Team] Cpt_Andromeda: 你好"
+    assert gamecode.decode_chat("@IH@E8@AP") == "你好吗"
+    assert gamecode.decode_chat("[zh] @IH@E8@AP") == "你好吗"
+    # OCR 容易在字符码之间误插入空格，测试是否正确折叠合并
+    assert gamecode.decode_chat("[全局] Player1: @IH @E8@AP") == "[全局] Player1: 你好吗"
+    assert gamecode.decode_chat("@IH @E8 @AP") == "你好吗"
+    # 普通非码文本不应被误转
+    assert gamecode.decode_chat("contact me @Bob") == "contact me @Bob"
+    assert gamecode.decode_chat("Normal English text") == "Normal English text"
+
+
+def test_decode_chat_returns_original_when_not_configured():
+    """未加载码表时应安全回退，原样返回输入。"""
+    gamecode.clear()
+    assert gamecode.decode_chat("[全局] Player1: @IH@E8@AP") == "[全局] Player1: @IH@E8@AP"
+
+
+def test_decode_chat_performance_on_long_text(table):
+    """宽松性能下限：100 次长聊天解码 < 2 秒（只挡算法级退化，不挑机器快慢）。
+
+    用真实量级的长文本（含聊天前缀 + 连续码 + OCR 空格 + 玩家名），确保
+    ``_collapse_adjacent_codes`` 的循环与前缀切分不会随输入爆炸增长。
+    """
+    import time
+
+    line = "[全局] Player1: " + "@IH @E8@AP " * 20 + "contact @Bob"
+    t0 = time.perf_counter()
+    for _ in range(100):
+        out = gamecode.decode_chat(line)
+    elapsed = time.perf_counter() - t0
+    assert out.endswith("@Bob"), "玩家名不能被解码破坏"
+    assert elapsed < 2.0, f"100 次长文本 decode_chat 耗时 {elapsed:.3f}s，疑似性能退化"

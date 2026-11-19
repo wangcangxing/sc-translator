@@ -152,8 +152,10 @@ class _FakeClient:
 
 
 class _FakeApp:
-    def __init__(self, client):
+    def __init__(self, client, post_to_main=None):
         self.client = client
+        # None = 走 _post_partial 的降级分支（旧用例依赖它）；传入可调用则模拟真机跨线程投递
+        self.post_to_main = post_to_main
 
     def make_client(self, use_cache=True):
         return self.client
@@ -276,6 +278,41 @@ def test_work_reports_ocr_text_before_translation():
     assert len(client.calls) == 1, "翻译照常只发一次"
 
 
+def test_work_posts_partial_to_main_thread_before_translation(qapp):
+    """走 post_to_main 时：投递发生在翻译调用之前，真正的回调落在主线程事件循环。"""
+    import threading
+
+    from PySide6.QtCore import QTimer
+
+    main_ident = threading.get_ident()
+    client = _FakeClient()
+    posted_at = {}          # 投递那一刻已发生的翻译调用次数
+    executed = {}
+
+    def post_to_main(fn):
+        # 模拟真机：把调用排回主线程事件循环，不在此刻就地执行
+        posted_at["n"] = len(client.calls)
+        QTimer.singleShot(0, fn)
+
+    def on_ocr(texts):
+        # 记录真正执行回调的线程，断言它落在主线程
+        executed["texts"] = list(texts)
+        executed["ident"] = threading.get_ident()
+
+    svc = _svc(["Quantum travel", "12345", "Bounty"], client)
+    svc.app.post_to_main = post_to_main
+    svc._work(REGION, max_lines=40, use_cache=True, on_ocr=on_ocr)
+
+    assert posted_at["n"] == 0, "分阶段原文必须在翻译调用之前投递"
+    assert not executed, "走 post_to_main 时不应在 _work 内直接执行回调"
+    # 驱动主线程事件循环，让排队的回调真正跑起来
+    for _ in range(6):
+        qapp.processEvents()
+    assert executed["texts"] == ["Quantum travel", "Bounty"]
+    assert executed["ident"] == main_ident, "分阶段回调必须在主线程执行"
+    assert len(client.calls) == 1, "翻译照常只发一次"
+
+
 def test_run_delivers_error_result():
     got = []
     svc = _svc(["x"], _FakeClient())
@@ -342,3 +379,34 @@ def test_consecutive_runs_with_real_cache_do_not_hang(tmp_home):
     assert not cache._lock.locked(), "跑完必须没有残留持锁"
     # 每轮都会新建客户端，但 /models 前缀探测只能有一次（否则每按一次热键白等 1~4.5 秒）
     assert len(gets) == 1, gets
+
+
+def test_work_converts_gamecode_before_translation():
+    """OCR 识别出的 @xx 字符码，在送进翻译和分阶段反馈前先被转换为汉字。"""
+    from sc_translator import gamecode
+
+    gamecode.load_text("AP=吗\nE8=好\nIH=你", src="<test>")
+    try:
+        client = _FakeClient()
+        svc = _svc(["[全局] Cpt_Andromeda: @IH@E8@AP", "[Team] Bob: Normal text"], client)
+        partial_texts = []
+        res = svc._work(REGION, max_lines=40, use_cache=True, on_ocr=partial_texts.extend)
+        assert partial_texts == ["[全局] Cpt_Andromeda: 你好吗", "[Team] Bob: Normal text"], "分阶段反馈中应是转换后的汉字"
+        assert client.calls[0][0] == ["[全局] Cpt_Andromeda: 你好吗", "[Team] Bob: Normal text"], "送进批量翻译的应是转换后的汉字"
+        assert res.lines[0].source == "[全局] Cpt_Andromeda: 你好吗"
+    finally:
+        gamecode.clear()
+
+
+def test_work_passes_gamecode_through_when_table_not_loaded():
+    """码表未加载（未装汉化）时，@码应原样送到翻译客户端，绝不抛错给界面。"""
+    from sc_translator import gamecode
+
+    gamecode.clear()
+    assert not gamecode.configured()
+    client = _FakeClient()
+    svc = _svc(["[全局] P: @IH@E8"], client)
+    res = svc._work(REGION, max_lines=40, use_cache=True)
+    assert client.calls[0][0] == ["[全局] P: @IH@E8"], "未装码表时原文原样透传"
+    assert res.lines[0].source == "[全局] P: @IH@E8"
+    assert res.error == ""

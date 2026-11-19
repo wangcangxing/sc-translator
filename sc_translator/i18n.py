@@ -771,6 +771,64 @@ _T: dict[str, tuple[str, str, str]] = {
         "在懸浮框裡翻譯的回話，譯文自動進剪貼簿（便於回遊戲 Ctrl+V）",
         "Replies translated in the overlay go straight to the clipboard (ready to Ctrl+V)",
     ),
+
+    # ---- 回话输出组合 / 中文码退化 / 其它原硬编码中文 ----
+    "reply.out.keep_one": (
+        "至少保留一项输出：中文码 或 译文",
+        "至少保留一項輸出：中文碼 或 譯文",
+        "Keep at least one output: Chinese code or translation",
+    ),
+    "reply.out.both": (
+        "回话输出：中文码 + 译文",
+        "回話輸出：中文碼 + 譯文",
+        "Reply output: Chinese code + translation",
+    ),
+    "reply.out.code_only": (
+        "回话输出：只中文码",
+        "回話輸出：只中文碼",
+        "Reply output: Chinese code only",
+    ),
+    "reply.out.foreign_only": (
+        "回话输出：只译文",
+        "回話輸出：只譯文",
+        "Reply output: translation only",
+    ),
+    "gc.table_missing": (
+        "⚠ 未找到汉化码表，无法生成中文码",
+        "⚠ 未找到漢化碼表，無法產生中文碼",
+        "⚠ Code table not found; cannot generate Chinese code",
+    ),
+    "gc.no_encodable": (
+        "⚠ 没有可编码的中文",
+        "⚠ 沒有可編碼的中文",
+        "⚠ No encodable Chinese text",
+    ),
+    "gc.translate_only_note": (
+        "（本次只输出译文）",
+        "（本次只輸出譯文）",
+        "(translation only this time)",
+    ),
+    "gl.sample_body": (
+        "每行 英文词条 = 中文译名",
+        "每行 英文詞條 = 中文譯名",
+        "One entry per line: English term = Chinese translation",
+    ),
+    "snap.screen": ("屏幕{n}", "螢幕{n}", "Screen {n}"),
+
+    # ---- 通用小控件（widgets.py）----
+    "widget.hotkey.ph": ("点击后按组合键", "點擊後按組合鍵", "Click, then press a key combination"),
+    "widget.hotkey.tip": (
+        "点击这里，然后按下你想用的组合键（Esc 取消）。",
+        "點擊這裡，然後按下你想用的組合鍵（Esc 取消）。",
+        "Click here, then press the combination you want (Esc to cancel).",
+    ),
+    "widget.hotkey.invalid": (
+        "这个键不能作为热键：纯字母/数字请搭配 Ctrl/Shift/Alt/Win（如 Ctrl+S）；Esc 取消。",
+        "這個鍵不能作為熱鍵：純字母/數字請搭配 Ctrl/Shift/Alt/Win（如 Ctrl+S）；Esc 取消。",
+        "This key cannot be a hotkey: letters/digits need Ctrl/Shift/Alt/Win (e.g. Ctrl+S); Esc to cancel.",
+    ),
+    "widget.key.show": ("显示", "顯示", "Show"),
+    "widget.key.hide": ("隐藏", "隱藏", "Hide"),
 }
 
 
@@ -815,7 +873,10 @@ def t(name: str, **kwargs) -> str:
     if kwargs:
         try:
             return text.format(**kwargs)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # 占位符错配被吞会返回带 {占位符} 的原文，很难发现；记一条 warning 便于定位，
+            # 但仍按约定返回原文、不抛异常到界面。
+            log.warning("文案格式化失败 key=%r kwargs=%r: %s", name, kwargs, exc)
             return text
     return text
 

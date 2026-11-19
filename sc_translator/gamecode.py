@@ -353,6 +353,91 @@ def decode(text: str) -> str:
     return res.strip()
 
 
+def _collapse_adjacent_codes(s: str) -> str:
+    """消除 OCR 偶尔在连续字符码之间误插入的空格（例如 ``@IH @E8`` -> ``@IH@E8``）。
+    
+    仅当前后两个 token 均为有效码时才合并，防止把类似 ``@Bob @Alice`` 等普通文本错误连接。
+    """
+    def rep(m: re.Match) -> str:
+        c1, c2 = m.group(1).upper(), m.group(2).upper()
+        if _resolve_code(c1) and _resolve_code(c2):
+            return f"@{c1}@{c2}"
+        return m.group(0)
+
+    old = ""
+    while old != s:
+        old = s
+        s = re.sub(r"@([0-9A-Za-z]{2,3})\s+@([0-9A-Za-z]{2,3})", rep, s)
+    return s
+
+
+def _has_bad_at_context(text: str) -> bool:
+    """扫描 text 里的每个 ``@``，判断是否属于"不该解码"的上下文。
+
+    命中任意一条即返回 True（调用方据此整条返回原文，避免部分解码）：
+    - ``@`` 后跟 0 或 1 位字母数字（半截码 / 孤立 @），例如 ``@IH@E`` 的 ``@E``；
+    - 邮箱/域名上下文：``@`` 前是普通字母（而非空格/开头/上一个 ``@码`` 的结尾），
+      或 ``@码`` 后紧跟 ``.域名``，例如 ``a@IH.com``。
+
+    合法码消息 ``@IH@E8@AP`` / ``@IH @E8`` 的每个 ``@`` 要么在开头/空格后，
+    要么紧接上一个 ``@码`` 的结尾，不会命中。
+    """
+    i, n = 0, len(text)
+    prev_was_code = False          # 前一个 token 是不是形如 @码 的码（决定紧邻的 @ 是否合法）
+    while i < n:
+        if text[i] != "@":
+            prev_was_code = False
+            i += 1
+            continue
+        j = i + 1
+        while j < n and text[j].isascii() and text[j].isalnum():
+            j += 1
+        token_len = j - i - 1
+        if token_len < 2:           # @E / @ / @后非字母数字：半截码，整条不解码
+            return True
+        if j < n and text[j] == "." and j + 1 < n and text[j + 1].isascii() and text[j + 1].isalnum():
+            return True             # @IH.com 之类域名
+        if i > 0 and text[i - 1].isascii() and text[i - 1].isalnum() and not prev_was_code:
+            return True             # a@IH：@ 前是普通字母，不是码尾
+        prev_was_code = 2 <= token_len <= 3
+        i = j
+    return False
+
+
+def decode_chat(text: str) -> str:
+    """对聊天/OCR 文本做字符码还原为汉字（保留 ``[频道] 玩家名:`` 前缀）。
+
+    流程：
+    1. 码表未加载或文本中不含 ``@`` 且无 ``[zh]`` 标记时直接返回原样，避免额外开销；
+    2. 切分前缀 ``[频道] 玩家名:`` 与消息正文，只对正文（或无前缀时的全文）做解码；
+    3. 正文含半截码或邮箱/域名上下文时整条返回原文，不部分解码；
+    4. 若包含连续的字符码且中间夹杂 OCR 空格，先做折叠消除；
+    5. 执行 decode 将 ``@xx`` 码还原为汉字；若解码过程异常则安全回退返回原文；
+    6. 拼回消息前缀并返回。
+    """
+    if not configured() or not text:
+        return text
+    from .textutil import split_chat_prefix
+
+    head, body = split_chat_prefix(text)
+    target = body if head else text
+    if "@" not in target and not has_zh_marker(target):
+        return text
+    if _has_bad_at_context(target):
+        return text
+    try:
+        cleaned = _collapse_adjacent_codes(target)
+        dec = decode(cleaned)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("decode_chat 解码跳过: %s", exc)
+        return text
+
+    if not head:
+        return dec
+    sep = " " if body.startswith(" ") else ""
+    return head + sep + dec
+
+
 def status() -> dict[str, object]:
     """给 UI/自检用的状态摘要。"""
     return {

@@ -168,6 +168,9 @@ class OverlayWindow(QWidget):
         # 这样关掉主窗口时程序照常退出（Qt 对 Tool 窗口默认不加 WA_QuitOnClose）
         self.setAttribute(Qt.WA_QuitOnClose, False)
         self._user_hidden = False
+        # 关闭守卫：浮窗回话异步回调在关窗后可能仍到达，此时控件已销毁；置位后一律丢弃结果。
+        # 只在真正 close（退出路径）时置位，普通自动隐藏（hideEvent）不置位，避免丢掉在途回话。
+        self._closed = False
         # 中文码行开关（运行时状态，默认关＝只出外文；开＝多一行 [zh] @码）
         self._code_line_on = False
         self._rows: dict[str, QWidget] = {}
@@ -848,6 +851,12 @@ class OverlayWindow(QWidget):
         self._focus_timer.stop()
         super().hideEvent(ev)
 
+    def closeEvent(self, ev) -> None:
+        # 真正关闭（退出路径，app.shutdown 会调 close）时置位，丢弃在途的浮窗回话回调。
+        self._closed = True
+        self._focus_timer.stop()
+        super().closeEvent(ev)
+
     # --- 标题栏拖拽（固定态） ---
     def _header_press(self, ev: QMouseEvent):
         if ev.button() == Qt.LeftButton:
@@ -981,6 +990,11 @@ class OverlayWindow(QWidget):
             return
 
         def done(ok: bool, result: str):
+            # 关闭守卫：关窗后（浮窗自身 close，或主窗口进入关闭流程）回调可能仍到达，
+            # 此时控件已销毁；直接丢弃结果，退化成"无反馈"而不是抛异常到界面。
+            mainwin = getattr(self.ctx, "mainwin", None)
+            if self._closed or getattr(mainwin, "_shutting_down", False):
+                return
             self._reply_busy = False
             self._reply_btn.setEnabled(True)
             self._reply_input.setPlaceholderText(t("ov.reply.ph"))
